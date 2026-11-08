@@ -1,0 +1,89 @@
+name: CyIME Learn Build
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          df -h /
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install NDK and tools
+        run: |
+          sdkmanager "ndk;29.0.14206865"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/29.0.14206865" >> $GITHUB_ENV
+          echo "ANDROID_NDK=$ANDROID_HOME/ndk/29.0.14206865" >> $GITHUB_ENV
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build
+
+      - name: Configure (arm64 only, own package id, test signing key)
+        run: |
+          chmod +x gradlew
+          # 只打 arm64，装成单独的 App（和官方 CyIME 可以并存）
+          sed -i 's/abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")/abiFilters += listOf("arm64-v8a")/' app/build.gradle.kts
+          sed -i 's/applicationId = "com.cyletix.cyime"/applicationId = "com.cyletix.cyime.learn"/' app/build.gradle.kts
+          grep -n 'abiFilters\|applicationId =' app/build.gradle.kts
+          # 测试版签名：固定一把测试密钥，保证每个测试版都能覆盖安装
+          cat > app/keystore.properties <<PROPS
+          storeFile=${GITHUB_WORKSPACE}/.github/signing/learn-test.p12
+          storePassword=cyimelearn
+          keyAlias=cyimelearn
+          keyPassword=cyimelearn
+          PROPS
+
+      - name: Download native deps (ONNX Runtime)
+        run: ./gradlew downloadOnnx --no-daemon
+
+      - name: Build release APK
+        run: ./gradlew assembleRelease --no-daemon
+
+      - name: List outputs
+        if: always()
+        run: find app/build/outputs -name '*.apk' | head -20
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: CyIME-learn-arm64
+          path: app/build/outputs/apk/release/*.apk
+
+      - name: Publish prerelease
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: learn-${{ github.run_number }}
+          name: CyIME 学英语版 测试 ${{ github.run_number }}
+          prerelease: true
+          target_commitish: ${{ github.sha }}
+          files: app/build/outputs/apk/release/*.apk
+          body: |
+            **CyIME 学英语版（测试）**：以 CyIME 为基础，加入青简的英语学习功能。
+            - 英语生词本：打中文时顺便记下用过的英文、中文、次数和例句，可搜索、标认识、删除。
+            - 词汇等级：每个词标 CEFR A1–C2，可按等级筛选。
+            - 入口：设置 › 智能 › 英语生词本（需在里面打开候选释义）。
+            包名 com.cyletix.cyime.learn，可与官方 CyIME 并存。由 AI（Hark）修改构建，非 CyIME 官方版本。
+            测试签名 SHA-256：`FB:3A:D0:5D:D1:B3:1E:1D:EC:A4:3F:49:00:86:4D:8A:4A:AE:17:B8:27:80:A3:34:31:81:53:0A:99:52:B5:BE`
