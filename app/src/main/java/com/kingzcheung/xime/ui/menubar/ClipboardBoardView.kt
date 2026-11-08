@@ -7,6 +7,7 @@ import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.staggeredgrid.*
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.material.icons.Icons
@@ -58,6 +59,9 @@ private data class ClipboardMenuAnchor(val bounds: Rect = Rect.Zero, val occupie
     val preferSide: Boolean = true, val corner: Dp = 8.dp)
 
 /** Corner of a record card; the long-press highlight uses the same one so its outline matches the card. */
+/** 列表样式里图片记录的高度：一条横幅，不占半块面板。 */
+internal val ClipboardListImageHeight = 72.dp
+
 internal fun clipboardCardCorner(oneLine: Boolean): Dp = if (oneLine) 10.dp else 12.dp
 private data class ClipboardItemMenuAnchor(val card: ClipboardCard, val position: ClipboardMenuAnchor)
 
@@ -107,6 +111,7 @@ internal fun ConnectedClipboardBoard(
     // Older history is read page by page while open; closing returns to the first page.
     DisposableEffect(manager) { onDispose { manager.resetHistoryWindow() } }
     val cardMaxLines = remember(prefs) { clipboardCardMaxLines(prefs.getInt(CLIPBOARD_CARD_MAX_LINES_KEY, 4)) }
+    val listLayout = remember(prefs) { prefs.getBoolean(CLIPBOARD_LIST_LAYOUT_KEY, true) }
     var closeAfterPaste by remember(prefs) { mutableStateOf(clipboardClosesAfterPaste(prefs)) }
     // A search submitted from the keyboard search bar shows only its matches (fixed records too).
     val boardQuery by manager.boardQuery.collectAsState()
@@ -178,7 +183,7 @@ internal fun ConnectedClipboardBoard(
             // Clearing means all unfixed history in the database, not only the pages read so far.
             manager.clearAll()
             store.removeImages(images.filterIsInstance<ClipboardCard.Image>().map { it.item.uri }.toSet())
-        }, cardMaxLines = cardMaxLines,
+        }, cardMaxLines = cardMaxLines, listLayout = listLayout,
         searchQuery = (liveQuery?.display ?: boardQuery).takeIf { it.isNotBlank() },
         onClearSearch = { manager.boardQuery.value = "" }, searchChip = liveQuery == null,
         onOpenSearch = onOpenSearch, full = room.full, showControls = showControls,
@@ -218,6 +223,8 @@ internal fun hideKeyboardFrom(context: Context) {
 
 /** Preference (board prefs) for how many lines a history card shows: 2, 4 or 8. */
 internal const val CLIPBOARD_CARD_MAX_LINES_KEY = "card_max_lines"
+/** 剪贴板记录排成列表（默认）还是卡片。 */
+internal const val CLIPBOARD_LIST_LAYOUT_KEY = "list_layout"
 
 internal fun clipboardCardMaxLines(stored: Int): Int = if (stored in setOf(2, 4, 8)) stored else 4
 
@@ -254,6 +261,8 @@ internal fun ClipboardBoardView(
     /** Clears all unfixed history; receives the unfixed images to remove. Null deletes [textItems] only. */
     onClearUnpinned: ((List<ClipboardCard>) -> Unit)? = null,
     cardMaxLines: Int = 4,
+    /** 列表样式（豆包那种一条一行、分隔线隔开）；false 为原来的卡片瀑布流。 */
+    listLayout: Boolean = false,
     /** The search shown in the board, or null; its chip clears it. */
     searchQuery: String? = null,
     onClearSearch: () -> Unit = {},
@@ -386,10 +395,11 @@ internal fun ClipboardBoardView(
             // The source rectangles are opening-time snapshots. Resizing must not reuse stale anchors.
             menu = false; itemMenu = null; groupMenu = null; deleting = null
         }
-        val columns = clipboardColumnCount(maxWidth.value)
+        val columns = if (listLayout) 1 else clipboardColumnCount(maxWidth.value)
         val compactControls = maxWidth.value / LocalDensity.current.fontScale < 360f
-        val content = remember(cards, pins, columns, pinsExpanded) {
-            clipboardBoardContent(cards, pins, columns, pinsExpanded)
+        val content = remember(cards, pins, columns, pinsExpanded, listLayout) {
+            // 列表样式一行一条：固定记录收起时留 3 条，而不是只剩 1 条。
+            clipboardBoardContent(cards, pins, if (listLayout) 3 else columns, pinsExpanded)
         }
         val pinsActuallyExpanded = pinsExpanded && content.pinsCollapsible
         val visibleCards = remember(content) { content.visible }
@@ -575,8 +585,10 @@ internal fun ClipboardBoardView(
                 val pinnedHeight = clipboardPinnedPreviewHeight(stableRecordsHeight).dp
                 LazyVerticalStaggeredGrid(StaggeredGridCells.Fixed(columns), Modifier.fillMaxSize().testTag("clipboard-records"),
                     state = gridState,
-                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp), verticalItemSpacing = 6.dp) {
+                    contentPadding = if (listLayout) PaddingValues(horizontal = 4.dp, vertical = 0.dp)
+                        else PaddingValues(horizontal = 6.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(if (listLayout) 0.dp else 6.dp),
+                    verticalItemSpacing = if (listLayout) 0.dp else 6.dp) {
                     if (incognito) item(key = "incognito", span = StaggeredGridItemSpan.FullLine) {
                         ClipboardIncognitoNotice(onIncognitoOff)
                     }
@@ -602,13 +614,14 @@ internal fun ClipboardBoardView(
                     fun LazyStaggeredGridScope.records(records: List<ClipboardCard>, fixedRecords: Boolean) {
                         items(records, key = { it.key }) { card ->
                             val chosen = card.key in selected
-                            ClipboardRecordCard(card = card, pinned = card.key in pins, chosen = chosen, maxLines = cardMaxLines,
+                            ClipboardRecordCard(card = card, pinned = card.key in pins, chosen = chosen,
+                                maxLines = if (listLayout) minOf(cardMaxLines, 2) else cardMaxLines, listRow = listLayout,
                                 masked = card is ClipboardCard.Text && card.item.sensitive && card.key !in revealed,
                                 selecting = selecting, keyboardFocused = keyboard?.active == true && card.key == focused,
                                 // Pictures share the pinned preview height: a tall screenshot must not fill the board.
                                 // Pins are one line; a recent picture keeps the bounded preview height.
                                 previewHeight = if (fixedRecords) ClipboardPinnedRowHeight
-                                    else if (card is ClipboardCard.Image) pinnedHeight else null,
+                                    else if (card is ClipboardCard.Image) (if (listLayout) ClipboardListImageHeight else pinnedHeight) else null,
                                 // Lazy layout retains removed keyed items through fade-out. Keep one
                                 // grid so collapsing pins does not flash or replace recent history.
                                 modifier = Modifier.animateItem(
@@ -804,21 +817,30 @@ private fun ClipboardRecordCard(
     modifier: Modifier = Modifier,
     /** 点了卡片下面识别出的小片段（邮箱、链接、密码…）：只贴那一段。 */
     onPiece: ((String) -> Unit)? = null,
+    /** 列表样式：整行铺满，不画卡片底色和圆角，底下一条细分隔线。 */
+    listRow: Boolean = false,
 ) {
     val colors = MaterialTheme.colorScheme
     val glass = LocalKeyboardInputPreferences.current.frostedGlass
     val highlighted = chosen || keyboardFocused
-    val shape = RoundedCornerShape(clipboardCardCorner(previewHeight == ClipboardPinnedRowHeight))
+    val shape = if (listRow) RoundedCornerShape(8.dp) else RoundedCornerShape(clipboardCardCorner(previewHeight == ClipboardPinnedRowHeight))
+    val divider = colors.onSurface.copy(alpha = .10f)
     val oneLine = previewHeight == ClipboardPinnedRowHeight
     val liquid = com.kingzcheung.xime.ui.theme.LiquidGlass.surfacesOn()
     BoxWithConstraints(modifier.fillMaxWidth()
         .then(if (previewHeight != null) Modifier.height(previewHeight) else Modifier)
+        .then(if (listRow) Modifier.drawBehind {
+                val y = size.height - .5.dp.toPx() / 2f
+                drawLine(divider, Offset(8.dp.toPx(), y), Offset(size.width - 8.dp.toPx(), y), .5.dp.toPx())
+            } else Modifier)
         .clip(shape)
-        .background(frostedKeyColor(if (highlighted) colors.secondaryContainer else clipboardCardColor(),
-            colors.onSurface, glass))
+        .then(if (listRow) { if (highlighted) Modifier.background(colors.secondaryContainer.copy(alpha = .6f)) else Modifier }
+            else Modifier.background(frostedKeyColor(if (highlighted) colors.secondaryContainer else clipboardCardColor(),
+                colors.onSurface, glass)))
         // 黑白主题深色是纯黑底：卡片不铺灰，靠描边看出边界（与设置页卡片的 idleBorderAlpha 一致，#82）。
         // 液态玻璃：没选中的卡片用按键同款细亮边代替淡描边；选中、键盘焦点的 2dp 强调色描边不变。
-        .then(if (!highlighted && liquid) Modifier.liquidGlassEdge(clipboardCardCorner(oneLine))
+        .then(if (listRow) Modifier
+            else if (!highlighted && liquid) Modifier.liquidGlassEdge(clipboardCardCorner(oneLine))
             else Modifier.border(if (highlighted) 2.dp else .5.dp,
                 if (highlighted) colors.primary
                 else colors.onSurface.copy(alpha = if (colors.surface.isNearBlack()) idleBorderAlpha(colors.surface) else .08f), shape))
@@ -836,16 +858,17 @@ private fun ClipboardRecordCard(
                         Modifier.fillMaxWidth()
                             .heightIn(min = if (previewHeight == null && pieces.isEmpty()) ClipboardPinnedRowHeight else 0.dp)
                             .wrapContentHeight(Alignment.CenterVertically)
-                            .padding(start = if (selecting) 28.dp else 8.dp,
-                                end = if (pinned) 26.dp else 8.dp, top = if (oneLine) 0.dp else 8.dp,
-                                bottom = if (oneLine) 0.dp else if (pieces.isNotEmpty()) 4.dp else 8.dp),
+                            .padding(start = if (selecting) 28.dp else if (listRow) 12.dp else 8.dp,
+                                end = if (pinned) 26.dp else if (listRow) 12.dp else 8.dp,
+                                top = if (oneLine) 0.dp else if (listRow) 11.dp else 8.dp,
+                                bottom = if (oneLine) 0.dp else if (pieces.isNotEmpty()) 4.dp else if (listRow) 11.dp else 8.dp),
                         color = if (highlighted) colors.onSecondaryContainer else colors.onSurface,
                         fontSize = 16.sp, lineHeight = 23.sp,
                         maxLines = if (oneLine) 1 else if (previewHeight != null) 3 else maxLines,
                         overflow = TextOverflow.Ellipsis)
                     // 识别出的片段：自动换行排开（窄卡片也看得全），每个按钮写明是什么，长串只显示头尾。
                     if (pieces.isNotEmpty() && onPiece != null) FlowRow(
-                        Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, bottom = 8.dp),
+                        Modifier.fillMaxWidth().padding(start = if (listRow) 12.dp else 8.dp, end = 8.dp, bottom = 8.dp),
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                         verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         pieces.forEach { piece ->

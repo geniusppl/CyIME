@@ -45,6 +45,7 @@ import com.kingzcheung.xime.clipboard.ClipboardImages
 import com.kingzcheung.xime.clipboard.ImageAccessActivity
 import com.kingzcheung.xime.settings.PerformanceCosts
 import com.kingzcheung.xime.ui.menubar.CLIPBOARD_CARD_MAX_LINES_KEY
+import com.kingzcheung.xime.ui.menubar.CLIPBOARD_LIST_LAYOUT_KEY
 import com.kingzcheung.xime.ui.menubar.CLIPBOARD_CLOSE_AFTER_PASTE_KEY
 import com.kingzcheung.xime.ui.menubar.clipboardCardMaxLines
 import com.kingzcheung.xime.ui.menubar.clipboardClosesAfterPaste
@@ -91,6 +92,7 @@ private fun ClipboardPanelDisplaySettings(onNavigateToGroups: () -> Unit) {
     val context = LocalContext.current
     val prefs = remember(context) { context.getSharedPreferences("clipboard_board", Context.MODE_PRIVATE) }
     var lines by remember { mutableStateOf(clipboardCardMaxLines(prefs.getInt(CLIPBOARD_CARD_MAX_LINES_KEY, 4))) }
+    var listLayout by remember { mutableStateOf(prefs.getBoolean(CLIPBOARD_LIST_LAYOUT_KEY, true)) }
     val groups by remember(context) { ClipboardGroupStore.getInstance(context) }.state.collectAsState()
     val images = remember(context) { ClipboardImages.getInstance(context) }
     // Same value as 启用/关闭最近截图 in the clipboard's ⋯ menu; the permission answer comes back on resume.
@@ -104,6 +106,13 @@ private fun ClipboardPanelDisplaySettings(onNavigateToGroups: () -> Unit) {
             onClick = onNavigateToGroups,
             showArrow = true,
             status = groups.groups.size.takeIf { it > 0 }?.let { "$it 个" },
+        )
+        SettingsToggleItem(
+            icon = Icons.TwoTone.ContentPaste,
+            title = "列表样式",
+            subtitle = "像豆包输入法：一条一行、细线隔开，最多两行；关掉回到卡片",
+            checked = listLayout,
+            onCheckedChange = { on -> listLayout = on; prefs.edit().putBoolean(CLIPBOARD_LIST_LAYOUT_KEY, on).apply() },
         )
         Column(Modifier.settingsSearchAnchor("卡片显示行数").fillMaxWidth().padding(16.dp)) {
             Text("卡片显示行数", style = MaterialTheme.typography.titleSmall)
