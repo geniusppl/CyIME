@@ -33,10 +33,13 @@ internal object ClipboardLinkChoices {
 
     /** 一条剪贴板文字能多给的几项（不含原文本身），没有链接时为空。 */
     fun linkChoices(text: String): List<String> {
-        val raw = firstLink(text) ?: return emptyList()
-        val clean = cleanLink(raw)
-        val bv = bilibiliVideoId(clean)
-        return listOfNotNull(clean.takeIf { it != text.trim() }, bv?.takeIf { it != clean && it != text.trim() }).distinct()
+        val link = firstLink(text)?.let { raw ->
+            val clean = cleanLink(raw)
+            val bv = bilibiliVideoId(clean)
+            listOfNotNull(clean.takeIf { it != text.trim() }, bv?.takeIf { it != clean && it != text.trim() })
+        }.orEmpty()
+        // 自用学习版：再加邮箱、电话、验证码、账号密码这些片段（ClipboardSmartPieces），候选栏最多多给 4 项。
+        return (link + ClipboardSmartPieces.extract(text)).distinct().filter { it != text.trim() }.take(4)
     }
 
     // 链接到空白、引号、尖括号或中文标点为止；末尾的英文标点（句号、逗号、右括号）不算链接。

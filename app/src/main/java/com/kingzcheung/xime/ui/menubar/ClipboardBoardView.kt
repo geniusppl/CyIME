@@ -616,6 +616,7 @@ internal fun ClipboardBoardView(
                                     placementSpec = keyboardPanelMotion(pinsActuallyExpanded),
                                     fadeOutSpec = keyboardPanelMotion(false))
                                     .onGloballyPositioned { cardBounds[card.key] = it.boundsInRoot() },
+                                onPiece = { piece -> focusedKey = card.key; onSelectText(piece) },
                                 onClick = {
                                     focusedKey = card.key
                                     if (selecting) selected = if (chosen) selected - card.key else selected + card.key
@@ -801,6 +802,8 @@ private fun ClipboardRecordCard(
     masked: Boolean = false,
     onClick: () -> Unit, onLongClick: () -> Unit,
     modifier: Modifier = Modifier,
+    /** 点了卡片下面识别出的小片段（邮箱、链接、密码…）：只贴那一段。 */
+    onPiece: ((String) -> Unit)? = null,
 ) {
     val colors = MaterialTheme.colorScheme
     val glass = LocalKeyboardInputPreferences.current.frostedGlass
@@ -825,18 +828,37 @@ private fun ClipboardRecordCard(
             onClick = onClick, onLongClick = onLongClick,
             onLongClickLabel = if (selecting) "切换选择" else "更多操作")) {
         when (card) {
-            is ClipboardCard.Text -> Text(if (masked) com.kingzcheung.xime.clipboard.ClipboardLinkChoices.SENSITIVE_MASK else card.item.text,
-                // A one-line record is as tall as a pinned row and its line sits in the middle; the old
-                // 48dp floor left a strip under the text (user 10-30). Longer text grows the card.
-                Modifier.align(Alignment.CenterStart).fillMaxWidth()
-                    .heightIn(min = if (previewHeight == null) ClipboardPinnedRowHeight else 0.dp)
-                    .wrapContentHeight(Alignment.CenterVertically)
-                    .padding(start = if (selecting) 28.dp else 8.dp,
-                        end = if (pinned) 26.dp else 8.dp, top = if (oneLine) 0.dp else 8.dp, bottom = if (oneLine) 0.dp else 8.dp),
-                color = if (highlighted) colors.onSecondaryContainer else colors.onSurface,
-                fontSize = 16.sp, lineHeight = 23.sp,
-                maxLines = if (oneLine) 1 else if (previewHeight != null) 3 else maxLines,
-                overflow = TextOverflow.Ellipsis)
+            is ClipboardCard.Text -> {
+                val pieces = if (masked || previewHeight != null || selecting || onPiece == null) emptyList()
+                    else remember(card.item.text) { com.kingzcheung.xime.clipboard.ClipboardSmartPieces.extract(card.item.text) }
+                Column(Modifier.align(Alignment.CenterStart).fillMaxWidth()) {
+                    Text(if (masked) com.kingzcheung.xime.clipboard.ClipboardLinkChoices.SENSITIVE_MASK else card.item.text,
+                        Modifier.fillMaxWidth()
+                            .heightIn(min = if (previewHeight == null && pieces.isEmpty()) ClipboardPinnedRowHeight else 0.dp)
+                            .wrapContentHeight(Alignment.CenterVertically)
+                            .padding(start = if (selecting) 28.dp else 8.dp,
+                                end = if (pinned) 26.dp else 8.dp, top = if (oneLine) 0.dp else 8.dp,
+                                bottom = if (oneLine) 0.dp else if (pieces.isNotEmpty()) 4.dp else 8.dp),
+                        color = if (highlighted) colors.onSecondaryContainer else colors.onSurface,
+                        fontSize = 16.sp, lineHeight = 23.sp,
+                        maxLines = if (oneLine) 1 else if (previewHeight != null) 3 else maxLines,
+                        overflow = TextOverflow.Ellipsis)
+                    if (pieces.isNotEmpty() && onPiece != null) Row(
+                        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
+                            .padding(start = 8.dp, end = 8.dp, bottom = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        pieces.forEach { piece ->
+                            Text(piece, Modifier.widthIn(max = 240.dp).clip(RoundedCornerShape(6.dp))
+                                .background(colors.onSurface.copy(alpha = .07f))
+                                .clickable { onPiece(piece) }
+                                .padding(horizontal = 8.dp, vertical = 5.dp)
+                                .testTag("clipboard-piece:${card.key}:$piece"),
+                                color = colors.onSurfaceVariant, fontSize = 14.sp, lineHeight = 18.sp,
+                                maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                }
+            }
             is ClipboardCard.Image -> {
                 val context = LocalContext.current
                 val density = LocalDensity.current
