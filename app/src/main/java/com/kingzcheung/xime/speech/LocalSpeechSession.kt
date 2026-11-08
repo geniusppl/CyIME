@@ -72,6 +72,11 @@ internal class LocalSpeechSession(
     private val wholeSessionBudgetMs: Long = WHOLE_SESSION_BUDGET_MS,
     /** 二次校正把关：中文有流式预览时，第二遍改动的字要过九键词组模型，否则留第一遍的字（见 [SecondPassGate]）。 */
     private val gate: SecondPassGate? = null,
+    /**
+     * 自用学习版（用户 11-08：说完要等一会儿才出字）：说完不再把整段录音从头重认一遍，
+     * 最后一句和前面按停顿定稿的句子一样单独校正，等待只剩最后一句的时间。
+     */
+    private val fastFinish: Boolean = true,
 ) : ResidentSession {
     // SenseVoice alone (no streaming or rolling preview, e.g. the 完整版 without Paraformer) keeps punctuation and gets
     // the same end-of-input re-read; its segments stay at the engine's 6 s so text still appears while speaking.
@@ -201,7 +206,7 @@ internal class LocalSpeechSession(
         // 整句定稿: the end-of-input re-read covers the last sentence, so the stop region is not decoded twice
         // (saves up to one 30 s decode of waiting). If the re-read is cancelled or over budget, its preview stays.
         // Without a streaming preview there is nothing to keep, so the stop region is still decoded.
-        if (wholeSentenceActive && engine.isStreaming && boundary == SpeechBoundary.STOP && !sessionOverflow) return
+        if (wholeSentenceActive && !fastFinish && engine.isStreaming && boundary == SpeechBoundary.STOP && !sessionOverflow) return
         if (engine.hasRefinement || !engine.isStreaming) {
             synchronized(outputLock) { pending.add(id) }
             val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(decodeTimeoutMs)
@@ -247,7 +252,7 @@ internal class LocalSpeechSession(
         }
     }
 
-    override fun finish(): String = finish(decodeTimeoutMs + 2000 + if (wholeSentenceActive) wholeSessionBudgetMs else 0)
+    override fun finish(): String = finish(decodeTimeoutMs + 2000 + if (wholeSentenceActive && !fastFinish) wholeSessionBudgetMs else 0)
 
     /**
      * 整句定稿的最后一步：整次输入的原始音频按停顿切成 ≤28 s 的块交给 SenseVoice。只在按停顿定稿都已
@@ -293,7 +298,7 @@ internal class LocalSpeechSession(
         refinement.shutdown()
         val refined = refinement.awaitTermination(remaining(), TimeUnit.NANOSECONDS)
         val whole = try {
-            if (wholeSentenceActive && drained && refined && !failed.get() && !abandoned.get()) wholeSessionText(deadline) else null
+            if (wholeSentenceActive && !fastFinish && drained && refined && !failed.get() && !abandoned.get()) wholeSessionText(deadline) else null
         } catch (_: Exception) { null } finally { wholeSettled.countDown() }
         synchronized(outputLock) {
             if (!drained || !refined) {

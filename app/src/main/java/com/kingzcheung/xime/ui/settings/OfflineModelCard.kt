@@ -300,6 +300,21 @@ internal fun SpeechPunctuationSettings() {
             Switch(checked = kept, onCheckedChange = null, colors = settingsSwitchColors())
         }
     }
+    var smartTidy by remember { mutableStateOf(SettingsPreferences.isSttSmartTidy(context)) }
+    HorizontalDivider(modifier = Modifier.padding(start = 16.dp),
+        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+    Row(Modifier.fillMaxWidth().settingsSearchAnchor("智能整理").testTag("speech-smart-tidy")
+        .toggleable(value = smartTidy, role = Role.Switch,
+            onValueChange = { smartTidy = it; SettingsPreferences.setSttSmartTidy(context, it) })
+        .padding(16.dp),
+        verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text("智能整理", style = MaterialTheme.typography.bodyLarge)
+            Text("去掉嗯、呃、句首的那个，和连说的重复词（然后然后、我我我）。只在本机处理，不联网。",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Switch(checked = smartTidy, onCheckedChange = null, colors = settingsSwitchColors())
+    }
 }
 
 /** 数字转阿拉伯数字：别人提的需求，默认关(VoiceNumbers)。 */

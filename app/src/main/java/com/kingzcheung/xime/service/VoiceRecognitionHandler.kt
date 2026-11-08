@@ -587,13 +587,16 @@ class VoiceRecognitionHandler(
         // 预览和定稿走同一条转换，说到一半出的 300 和说完的 325 是同一种写法，不会中文、数字来回跳。
         val arabicNumbers = SettingsPreferences.isSttArabicNumbers(context)
         // 语音纠错放在最后：词表里写的是用户看到的结果(已转好数字和标点)；预览和定稿同样替换，不会先出错词再跳。
+        val tidy = SettingsPreferences.isSttSmartTidy(context)
         val corrections = if (SettingsPreferences.isSttCorrections(context))
             VoiceCorrections.of(SettingsPreferences.getSttCorrectionsText(context)) else null
         return segments.mapIndexed { index, part ->
             val keep = automatic && (part.serverPunctuation || (localSentences && part.language == InputLanguage.CHINESE))
             normalizeVoiceText(part.text, language, keep, if (index == segments.lastIndex) marks else marks.copy(trailing = true),
                 arabicNumbers)
-        }.filter(String::isNotEmpty).joinToString(" ").let { corrections?.apply(it) ?: it }
+        }.filter(String::isNotEmpty).joinToString(" ")
+            .let { if (tidy) com.kingzcheung.xime.speech.VoiceTidy.apply(it) else it }
+            .let { corrections?.apply(it) ?: it }
     }
 
     private fun voiceMarks() = VoiceMarks(comma = SettingsPreferences.isSttPunctuationComma(context),

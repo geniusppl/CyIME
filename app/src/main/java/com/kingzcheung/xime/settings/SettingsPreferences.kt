@@ -119,6 +119,7 @@ object SettingsPreferences {
     const val KEY_STT_ENGINE_IDLE_MINUTES = "stt_engine_idle_minutes"
     const val KEY_STT_DEBUG_RECORD = "stt_debug_record"
     const val KEY_STT_WHOLE_SENTENCE = "stt_whole_sentence"
+    const val KEY_STT_SMART_TIDY = "stt_smart_tidy"
     const val KEY_STT_AUTO_PUNCTUATION = "stt_auto_punctuation"
     const val KEY_STT_PUNCTUATION_COMMA = "stt_punctuation_comma"
     const val KEY_STT_PUNCTUATION_PERIOD = "stt_punctuation_period"
@@ -992,6 +993,13 @@ object SettingsPreferences {
      */
     fun isSttAutoPunctuation(context: Context): Boolean {
         return getPrefs(context).getBoolean(KEY_STT_AUTO_PUNCTUATION, false)
+    }
+
+    /** 语音智能整理（自用学习版）：去口头语、重复词，见 [com.kingzcheung.xime.speech.VoiceTidy]。默认开。 */
+    fun isSttSmartTidy(context: Context): Boolean = getPrefs(context).getBoolean(KEY_STT_SMART_TIDY, true)
+
+    fun setSttSmartTidy(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_STT_SMART_TIDY, enabled).apply()
     }
 
     fun setSttAutoPunctuation(context: Context, enabled: Boolean) {
