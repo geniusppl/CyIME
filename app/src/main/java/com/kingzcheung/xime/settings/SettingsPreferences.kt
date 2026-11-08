@@ -45,6 +45,13 @@ object SettingsPreferences {
     fun setGlassLiquid(context: Context, enabled: Boolean) {
         getPrefs(context).edit().putBoolean(KEY_GLASS_LIQUID, enabled).apply()
     }
+    /** 自用学习版：液态玻璃「浓郁」样式（苹果/澎湃同款：厚亮边、彩虹色散边、奶白高光、按下鼓起回弹），默认开。 */
+    const val KEY_GLASS_LIQUID_RICH = "glass_liquid_rich"
+    fun glassLiquidRich(context: Context): Boolean =
+        getPrefs(context).getBoolean(KEY_GLASS_LIQUID_RICH, true)
+    fun setGlassLiquidRich(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_GLASS_LIQUID_RICH, enabled).apply()
+    }
     const val KEY_PUNCTUATION_FULL_WIDTH = "punctuation_full_width"
     fun punctuationFullWidth(context: Context, default: Boolean): Boolean =
         getPrefs(context).getBoolean(KEY_PUNCTUATION_FULL_WIDTH, default)

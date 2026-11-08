@@ -168,6 +168,14 @@ private fun ThemeSettingsPage(
                                 SettingsPreferences.setGlassLiquid(context, enabled)
                             }
                         }, costItem = com.kingzcheung.xime.settings.PerformanceCosts.Item.LIQUID_GLASS)
+                    if (glass.dark.enabled && com.kingzcheung.xime.ui.theme.LiquidGlass.enabled(context)) {
+                        SettingsToggleItem(icon = Icons.TwoTone.AutoAwesome, title = "浓郁液态玻璃",
+                            subtitle = "厚亮边、彩虹色散边、奶白高光，按下像水珠鼓起；关掉回到细亮边",
+                            checked = com.kingzcheung.xime.ui.theme.LiquidGlass.rich(context),
+                            onCheckedChange = { enabled ->
+                                changeAppearance(context, onThemeChanged) { SettingsPreferences.setGlassLiquidRich(context, enabled) }
+                            })
+                    }
                     if (glass.dark.enabled) {
                         SettingsItem(icon = Icons.TwoTone.Opacity, title = "透明度与模糊",
                             subtitle = "浅色、深色分开设置", showArrow = true,

@@ -16,6 +16,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -49,6 +50,13 @@ import com.kingzcheung.xime.settings.SettingsPreferences
  */
 internal object LiquidGlass {
     private val on = mutableStateOf(false)
+    private val rich = mutableStateOf(true)
+
+    /** 浓郁样式（见 [SettingsPreferences.KEY_GLASS_LIQUID_RICH]）；可在组合和绘制里读。 */
+    fun rich(context: Context): Boolean {
+        if (listener == null) bind(context.applicationContext ?: context)
+        return rich.value
+    }
     // SharedPreferences 只弱引用监听器，这里必须强引用住。
     @Volatile private var listener: SharedPreferences.OnSharedPreferenceChangeListener? = null
 
@@ -82,8 +90,10 @@ internal object LiquidGlass {
         if (listener != null) return
         val prefs = SettingsPreferences.getPrefsPublic(context)
         on.value = SettingsPreferences.glassLiquid(context)
+        rich.value = SettingsPreferences.glassLiquidRich(context)
         val l = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
             if (key == null || key == SettingsPreferences.KEY_GLASS_LIQUID) on.value = SettingsPreferences.glassLiquid(context)
+            if (key == null || key == SettingsPreferences.KEY_GLASS_LIQUID_RICH) rich.value = SettingsPreferences.glassLiquidRich(context)
         }
         listener = l
         prefs.registerOnSharedPreferenceChangeListener(l)
@@ -109,8 +119,69 @@ internal fun Modifier.liquidGlassCap(cap: Modifier, radius: Dp): Modifier = comp
             held.value = false
         }
     }
-    observed.then(liquidRefraction(radius)).then(cap).then(liquidRim(radius, dark, held))
+    val rich = LiquidGlass.rich(androidx.compose.ui.platform.LocalContext.current)
+    if (!rich) return@composed observed.then(liquidRefraction(radius)).then(cap).then(liquidRim(radius, dark, held))
+    // 浓郁样式：按下像水珠一样鼓起，松手带一点回弹（弹簧动画，只动这一个键的图层，不重排布局）。
+    val bulge by androidx.compose.animation.core.animateFloatAsState(
+        targetValue = if (held.value) 1.07f else 1f,
+        animationSpec = androidx.compose.animation.core.spring(
+            dampingRatio = if (held.value) .7f else .38f, stiffness = if (held.value) 900f else 420f),
+        label = "liquidBulge")
+    observed.then(Modifier.graphicsLayer { scaleX = bulge; scaleY = bulge })
+        .then(liquidRefraction(radius)).then(cap).then(liquidRichRim(radius, dark, held))
 }
+
+/**
+ * 浓郁样式（参考澎湃/iOS 控制中心）：
+ * 1. 上半部一层奶白高光，像厚玻璃顶面的反光；
+ * 2. 一圈低透明度的彩虹色散边（沿边一周换色相），模拟玻璃边缘的折射；
+ * 3. 外面一道较粗的白亮边，左上最亮、右下回光；
+ * 4. 按住时键面整体变亮一档，边更亮。
+ * 背后应用的画面输入法读不到，透镜弯折做不了，只靠系统窗口模糊打底。
+ */
+private fun liquidRichRim(radius: Dp, dark: Boolean, held: androidx.compose.runtime.State<Boolean>): Modifier =
+    Modifier.drawWithCache {
+        val w = size.width
+        val h = size.height
+        val stroke = 1.3f * density
+        val inset = stroke / 2f
+        val corner = (radius.toPx() - inset).coerceIn(0f, size.minDimension / 2f)
+        val bounds = Rect(inset, inset, w - inset, h - inset)
+        val visible = bounds.width > 0f && bounds.height > 0f
+        val path = Path().apply { addRoundRect(RoundRect(bounds, CornerRadius(corner))) }
+        val innerInset = stroke * 1.6f
+        val inner = Path().apply {
+            addRoundRect(RoundRect(Rect(innerInset, innerInset, w - innerInset, h - innerInset),
+                CornerRadius((corner - innerInset).coerceAtLeast(0f))))
+        }
+        val sheen = Brush.verticalGradient(
+            0f to Color.White.copy(alpha = if (dark) .20f else .42f),
+            .5f to Color.White.copy(alpha = if (dark) .05f else .12f),
+            1f to Color.White.copy(alpha = 0f),
+        )
+        val bottomGlow = Brush.verticalGradient(
+            .7f to Color.White.copy(alpha = 0f), 1f to Color.White.copy(alpha = if (dark) .10f else .16f))
+        val rainbowAlpha = if (dark) .55f else .42f
+        val rainbow = Brush.sweepGradient(
+            listOf(Color(0xFF5AC8FA), Color(0xFFAF52DE), Color(0xFFFF2D55), Color(0xFFFFCC00),
+                Color(0xFF34C759), Color(0xFF5AC8FA)).map { it.copy(alpha = rainbowAlpha) },
+            Offset(w / 2f, h / 2f))
+        val rim = Brush.linearGradient(
+            listOf(Color.White.copy(alpha = if (dark) .85f else .95f), Color.White.copy(alpha = .18f),
+                Color.White.copy(alpha = .10f), Color.White.copy(alpha = if (dark) .45f else .6f)),
+            Offset.Zero, Offset(w, h))
+        val heldFill = Color.White.copy(alpha = if (dark) .10f else .16f)
+        onDrawWithContent {
+            if (visible) clipPath(path) {
+                drawPath(path, sheen)
+                drawPath(path, bottomGlow)
+                if (held.value) drawPath(path, heldFill)
+                drawPath(inner, rainbow, style = Stroke(stroke * 1.4f))
+                drawPath(path, rim, style = Stroke(if (held.value) stroke * 1.8f else stroke))
+            }
+            drawContent()
+        }
+    }
 
 /**
  * 图片背景的边缘折射：只在键帽外圈约 5dp 取样并弯折，保留轻微色散，键中央直接透出键盘已画好的背景。
