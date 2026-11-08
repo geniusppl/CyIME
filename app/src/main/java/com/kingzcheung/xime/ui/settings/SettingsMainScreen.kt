@@ -22,6 +22,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.automirrored.twotone.MenuBook
 import androidx.compose.material.icons.twotone.Draw
+import androidx.compose.material.icons.twotone.School
 import androidx.compose.material.icons.twotone.Swipe
 import androidx.compose.material.icons.twotone.Language
 import androidx.compose.material.icons.twotone.AppSettingsAlt
@@ -301,6 +302,18 @@ fun SettingsMainContent(
                         title = stringResource(R.string.item_dictionary_title), searchKey = "词库",
                         subtitle = stringResource(R.string.item_dictionary_summary),
                         onClick = onNavigateToDictionary,
+                        showArrow = true
+                    )
+                    HorizontalDivider(
+                        modifier = Modifier.padding(start = 56.dp),
+                        thickness = 0.5.dp,
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                    )
+                    SettingsItem(
+                        icon = Icons.TwoTone.School,
+                        title = "英语生词本", searchKey = "英语生词本",
+                        subtitle = "打字时顺便记下用过的英文，按等级复习",
+                        onClick = { onNavigateToRoute(SettingsRoutes.VocabularyBook) },
                         showArrow = true
                     )
                     HorizontalDivider(

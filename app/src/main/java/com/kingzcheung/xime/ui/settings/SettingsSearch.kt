@@ -393,6 +393,7 @@ internal val SettingsSearchIndex: List<SettingsSearchEntry> = run {
         page("存储空间", about, SettingsRoutes.StorageSpace, "存储 空间 占用 清理 缓存 容量 内存 运行内存 RAM 释放 安装包 体积"),
         // 入口在首页最上面一行；搜索路径归到「智能」，和用户学习数据放在一组。
         page("打字统计", smart, SettingsRoutes.TypingStats, "统计 字数 打字速度 码长 纠错 按错 首选率 称号 输入统计"),
+        page("英语生词本", smart, SettingsRoutes.VocabularyBook, "生词 单词 英语 英文 学习 背单词 词汇 等级 CEFR 释义 青简"),
     ).filter {
         // Developer-only tools (handwriting training, speech tuning recordings, raw Rime file manager)
         // are hidden in public, elder and friend packages.

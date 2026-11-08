@@ -1096,6 +1096,7 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
         super.onCreate()
         if (BuildConfig.DEV_TOOLS) EnterProbe.service = java.lang.ref.WeakReference(this)
         com.kingzcheung.xime.stats.TypingStats.init(this)
+        com.kingzcheung.xime.gloss.VocabularyBook.init(this)
         com.kingzcheung.xime.ui.keyboard.HandwritingGlassRegion.reporter = handwritingGlassRegionReporter
         com.kingzcheung.xime.ui.keyboard.CursorLineMetrics.requester = cursorLineRequester
         // 记录与打字速度有关的本机状态（用户词库体积、可选模型、内存余量），只记数量不记内容。
@@ -4259,6 +4260,7 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
         super.onFinishInputView(finishingInput)
         runtimeObserver?.stop()
         com.kingzcheung.xime.stats.TypingStats.flush()
+        com.kingzcheung.xime.gloss.VocabularyBook.flush()
         com.kingzcheung.xime.association.AssociationManager.flushLearning()
         // App 收起键盘（点了别处）：听写结束，不再自己弹悬浮条；只有收起按钮才出悬浮条（voiceKeepsListeningAfter）。
         voiceKeptAlive = !finishingInput && voiceKeepsAliveOnHide()
@@ -5345,6 +5347,9 @@ class XimeInputMethodService : InputMethodService(), LifecycleOwner, SavedStateR
         typingStatsSource().let { source ->
             com.kingzcheung.xime.stats.TypingStats.onCommit(delivered, isPaste, source, softKeyboard = !hasHardwareKeyboard,
                 combo = typingStatsCombo(source, !hasHardwareKeyboard))
+        }
+        if (isChineseMode && !isPaste) {
+            com.kingzcheung.xime.gloss.VocabularyBook.onCommit(delivered) { connection.getTextBeforeCursor(60, 0) }
         }
         if (isChineseMode) {
             val before = runCatching { connection.getTextBeforeCursor(25, 0)?.toString() }.getOrNull()

@@ -128,6 +128,7 @@ fun SettingsScreen(
             }
         }
         composable(SettingsRoutes.TypingStats) { TypingStatsScreen { navController.popBackStack() } }
+        composable(SettingsRoutes.VocabularyBook) { VocabularyBookScreen { navController.popBackStack() } }
         composable(SettingsRoutes.HardwareKeyboard) { HardwareKeyboardSettingsContent { navController.popBackStack() } }
         composable("languages") {
             LanguageSettingsContent(onBack = { navController.popBackStack() },

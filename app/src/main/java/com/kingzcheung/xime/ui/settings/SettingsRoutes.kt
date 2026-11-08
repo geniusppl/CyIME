@@ -42,5 +42,6 @@ object SettingsRoutes {
     const val KeyboardResize = "keyboard_resize"
     const val ToolbarArrange = "toolbar_arrange"
     const val TypingStats = "typing_stats"
+    const val VocabularyBook = "vocabulary_book"
     const val Other = "other_settings"
 }
