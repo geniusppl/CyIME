@@ -73,7 +73,9 @@ jobs:
         run: ./gradlew downloadOnnx --no-daemon
 
       - name: Build release APK
-        run: ./gradlew assembleRelease --no-daemon
+        run: |
+          # GitHub 下载偶尔 503/504，失败自动重试两次
+          for i in 1 2 3; do ./gradlew assembleRelease --no-daemon && exit 0; echo "retry $i"; sleep 30; done; exit 1
 
       - name: List outputs
         if: always()
