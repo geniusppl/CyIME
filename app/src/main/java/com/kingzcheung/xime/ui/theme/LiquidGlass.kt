@@ -176,7 +176,6 @@ private fun liquidRichRim(radius: Dp, dark: Boolean, held: androidx.compose.runt
             drawContent()
         }
     }
-    }
 
 /**
  * 图片背景的边缘折射：只在键帽外圈约 5dp 取样并弯折，保留轻微色散，键中央直接透出键盘已画好的背景。
