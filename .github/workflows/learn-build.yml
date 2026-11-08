@@ -48,7 +48,9 @@ jobs:
           sed -i 's/abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")/abiFilters += listOf("arm64-v8a")/' app/build.gradle.kts
           sed -i 's/applicationId = "com.cyletix.cyime"/applicationId = "com.cyletix.cyime.learn"/' app/build.gradle.kts
           # 日语 azooKey 预编译库上游没公开发布（下载 404），这个版本不带日语转换（不影响中文和英语）
-          sed -i '/apply(from = "build-logic\/tasks-japanese.gradle.kts")/d' app/build.gradle.kts
+          sed -i '/configureEach { dependsOn(prepareJapaneseDictionaries) }/d; /configureEach { dependsOn(prepareAzooKeyLibraries) }/d' app/build-logic/tasks-japanese.gradle.kts
+          sed -i 's/, "prepareJapaneseDictionaries")/)/' app/build-logic/tasks-rime-manifest.gradle.kts
+          grep -n dependsOn app/build-logic/tasks-rime-manifest.gradle.kts
           grep -n 'abiFilters\|applicationId =' app/build.gradle.kts
           # 测试版签名：固定一把测试密钥，保证每个测试版都能覆盖安装
           cat > app/keystore.properties <<PROPS
