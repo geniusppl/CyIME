@@ -60,6 +60,15 @@ jobs:
           keyPassword=cyimelearn
           PROPS
 
+      - name: Bundle Qingjian English glossary
+        run: |
+          # 青简英语释义表（GPL-3.0-or-later），固定到一个提交并核对 SHA-256，转成 CyIME 释义格式打进 APK
+          url=https://raw.githubusercontent.com/qingjian-team/qingjian/869bdfa2aa18d04d871cb79e78ab2fe24b5d83be/assets/glossary/glossary-en.tsv
+          for i in 1 2 3; do curl -fsSL --retry 3 -o /tmp/glossary-en.tsv "$url" && break; sleep 10; done
+          echo "7b9676979aa227bde7a2d541354a59b73a04f33acd36ef5d6c433ce789b81625  /tmp/glossary-en.tsv" | sha256sum -c -
+          mkdir -p app/src/main/assets/gloss
+          python3 -I tools/dictionaries/glossary/convert_qingjian.py /tmp/glossary-en.tsv app/src/main/assets/gloss/qingjian_gloss_en.tsv
+
       - name: Download native deps (ONNX Runtime)
         run: ./gradlew downloadOnnx --no-daemon
 

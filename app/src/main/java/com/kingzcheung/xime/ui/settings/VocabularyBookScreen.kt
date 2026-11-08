@@ -71,6 +71,8 @@ fun VocabularyBookScreen(onBack: () -> Unit) {
     var enabled by remember { mutableStateOf(VocabularyBook.isEnabled(context)) }
     var glossOn by remember { mutableStateOf(glossEnabled(context)) }
     var glossRequest by remember { mutableIntStateOf(0) }
+    var glossSource by remember { mutableStateOf(CandidateGlossary.source(context)) }
+    val hasQingjian = remember { CandidateGlossary.hasQingjian(context) }
     var query by remember { mutableStateOf("") }
     var filter by remember { mutableStateOf("全部") }
     var confirmClear by remember { mutableStateOf(false) }
@@ -106,7 +108,9 @@ fun VocabularyBookScreen(onBack: () -> Unit) {
             if (!glossOn) item {
                 SettingsSection(title = "先打开候选释义", content = {
                     SettingsItem(Icons.TwoTone.Translate, "在候选旁显示英文释义",
-                        "生词本靠释义词典认出英文；打开后候选旁会显示英文，第一次要下载词典",
+                        if (glossSource == CandidateGlossary.Source.QINGJIAN && hasQingjian)
+                            "生词本靠释义词典认出英文；打开后候选旁会显示英文（青简释义已内置，不用下载）"
+                        else "生词本靠释义词典认出英文；打开后候选旁会显示英文，第一次要下载词典",
                         onClick = {
                             SettingsPreferences.setCandidateCommentContent(context, CandidateCommentContent.GLOSS)
                             if (SettingsPreferences.candidateCommentMode(context) == CandidateCommentMode.HIDE)
@@ -117,7 +121,27 @@ fun VocabularyBookScreen(onBack: () -> Unit) {
                         })
                 })
             }
-            if (glossOn) item { GlossDictionaryStatus(glossRequest) }
+            if (glossOn && glossSource == CandidateGlossary.Source.CYIME) item { GlossDictionaryStatus(glossRequest) }
+            if (hasQingjian) item {
+                SettingsSection(title = "释义来源", content = {
+                    SettingsItem(
+                        if (glossSource == CandidateGlossary.Source.CYIME) Icons.TwoTone.CheckCircle else Icons.TwoTone.RadioButtonUnchecked,
+                        "CyIME 词典", "取自 ECDICT 和 CC-CEDICT，按常用度筛过，偏准、偏精简；需下载",
+                        onClick = {
+                            glossSource = CandidateGlossary.Source.CYIME
+                            CandidateGlossary.setSource(context, glossSource)
+                        })
+                    HorizontalDivider(Modifier.padding(start = 56.dp), thickness = 0.5.dp,
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                    SettingsItem(
+                        if (glossSource == CandidateGlossary.Source.QINGJIAN) Icons.TwoTone.CheckCircle else Icons.TwoTone.RadioButtonUnchecked,
+                        "青简释义", "DeepSeek 大模型生成，收词更多、带词性（n. computer）；已内置。查不到的再用 CyIME 词典",
+                        onClick = {
+                            glossSource = CandidateGlossary.Source.QINGJIAN
+                            CandidateGlossary.setSource(context, glossSource)
+                        })
+                })
+            }
             item {
                 OutlinedTextField(value = query, onValueChange = { query = it }, singleLine = true,
                     placeholder = { Text("搜索英文、中文或例句") }, modifier = Modifier.fillMaxWidth())

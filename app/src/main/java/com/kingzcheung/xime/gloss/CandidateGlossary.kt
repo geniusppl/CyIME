@@ -83,25 +83,79 @@ object CandidateGlossary {
 
     fun isInstalled(context: Context): Boolean = file(context).let { it.isFile && it.length() > 0 }
 
+    /**
+     * 释义来源（自用学习版加的）：CYIME = CyIME 自己的词典（ECDICT + CC-CEDICT，需下载）；
+     * QINGJIAN = 青简的英语释义表（LLM 生成、带词性，随 APK 打包，不用下载），中文候选优先查它，
+     * 查不到、以及英文候选的中文释义，再退回 CyIME 词典（已下载时）。
+     */
+    enum class Source { CYIME, QINGJIAN }
+
+    private const val PREF_SOURCE = "candidate_gloss_source"
+    const val QINGJIAN_ASSET = "gloss/qingjian_gloss_en.tsv"
+
+    fun source(context: Context): Source =
+        SettingsPreferences.getPrefsPublic(context).getString(PREF_SOURCE, null)
+            ?.let { stored -> Source.entries.firstOrNull { it.name == stored } } ?: Source.CYIME
+
+    fun setSource(context: Context, value: Source) {
+        SettingsPreferences.getPrefsPublic(context).edit().putString(PREF_SOURCE, value.name).apply()
+        prepare(context)
+    }
+
+    /** 这个 APK 里有没有打包青简释义表。 */
+    fun hasQingjian(context: Context): Boolean = try {
+        context.assets.open(QINGJIAN_ASSET).use { true }
+    } catch (_: Exception) {
+        false
+    }
+
+    /** 把打包的青简表复制到私有目录（App 更新后重新复制一次），之后内存映射读取。 */
+    private fun qingjianFile(context: Context): File? = try {
+        val target = File(File(context.filesDir, "gloss"), "qingjian_gloss_en.tsv")
+        val stamp = File(target.parentFile, "qingjian_gloss_en.stamp")
+        val version = context.packageManager.getPackageInfo(context.packageName, 0).lastUpdateTime.toString()
+        if (!target.isFile || !stamp.isFile || stamp.readText() != version) {
+            copyAsset(context, target)
+            stamp.writeText(version)
+        }
+        target
+    } catch (error: Exception) {
+        FileLogger.w(TAG, "青简释义表准备失败：${error.message}")
+        null
+    }
+
+    private fun copyAsset(context: Context, target: File) {
+        target.parentFile?.mkdirs()
+        val temp = File(target.parentFile, target.name + ".tmp")
+        context.assets.open(QINGJIAN_ASSET).use { input -> temp.outputStream().use { input.copyTo(it) } }
+        if (!temp.renameTo(target)) { target.delete(); temp.renameTo(target) }
+    }
+
     /** 按当前设置在后台加载或释放词典；只读偏好和文件信息，可在主线程调用。 */
     fun prepare(context: Context) {
         val source = file(context)
         val wanted = SettingsPreferences.candidateCommentContent(context) == CandidateCommentContent.GLOSS &&
             SettingsPreferences.candidateCommentMode(context) != CandidateCommentMode.HIDE
+        val useQingjian = source(context) == Source.QINGJIAN && hasQingjian(context)
         if (wanted && !source.isFile) upgradeFromLegacy(context)
-        if (!wanted || !source.isFile) {
+        if (!wanted || (!source.isFile && !useQingjian)) {
             if (table != null) revisionState.intValue++
             table = null
             signature = null
             return
         }
-        val current = "${source.absolutePath}:${source.length()}:${source.lastModified()}"
+        val current = "${source.absolutePath}:${source.length()}:${source.lastModified()}:qingjian=$useQingjian"
         if (current == signature || !loading.compareAndSet(false, true)) return
         thread(name = "candidate-gloss", isDaemon = true) {
             try {
                 val corrections = context.resources.openRawResource(R.raw.candidate_gloss_corrections)
-                val opened = GlossTable.open(source, readCorrections(corrections))
-                opened.overlay = openPrivateAsset(context)
+                val privateTable = openPrivateAsset(context)
+                val qingjian = if (useQingjian) qingjianFile(context)?.let { GlossTable.open(it) } else null
+                val base = if (source.isFile) GlossTable.open(source, readCorrections(corrections)) else null
+                // 查表顺序：私人补充包 → 青简（选了时）→ CyIME 词典
+                qingjian?.overlay = privateTable
+                val opened = base ?: qingjian ?: error("没有可用的释义词典")
+                if (base != null) base.overlay = qingjian ?: privateTable
                 synchronized(composed) { composed.clear() }
                 table = opened
                 signature = current
@@ -203,7 +257,7 @@ object CandidateGlossary {
         // 单字加语气词（懒啊、好呀）只在这个字有可靠释义、又不是“是、有、在”和代词这类虚字时套（是啊 不是 “is”）。
         val singleOk = stem.length == 1 && !question && stem[0] !in SINGLE_STEM_EXCLUDED
         if ((stem.length >= 2 || singleOk) && (last in MODAL_PARTICLES || question)) {
-            val base = table.lookup(stem)?.takeUnless { it.startsWith(APPROX) }?.removePrefix(PHRASE)
+            val base = table.lookup(stem)?.takeUnless { it.startsWith(APPROX) }?.removePrefix(PHRASE)?.let { stripPartOfSpeech(it) }
                 ?: numberGloss(stem) ?: return null
             return if (question) "${base.trimEnd('?', '!')}?" else base
         }
@@ -301,7 +355,13 @@ object CandidateGlossary {
         if (text.isBlank() || text.all { it.code < 0x80 }) return null
         return table.lookup(keyOf(text))?.removePrefix(APPROX)
             ?.takeUnless { it.isBlank() || it.endsWith("…") || it.startsWith(PHRASE) }
+            ?.let { stripPartOfSpeech(it) }?.takeUnless { it.isBlank() }
     }
+
+    private val PART_OF_SPEECH = Regex("^(?:[a-z]{1,6}\\.\\s+)+")
+
+    /** 青简释义带词性（n. computer）：显示时保留，上屏英文和记生词时去掉。 */
+    internal fun stripPartOfSpeech(value: String): String = value.replace(PART_OF_SPEECH, "").trim()
 
     internal fun swapped(table: GlossTable?, texts: List<String>, comments: List<String>): Pair<List<String>, List<String>> {
         if (table == null) return texts to comments
