@@ -45,7 +45,7 @@ object SettingsPreferences {
     fun setGlassLiquid(context: Context, enabled: Boolean) {
         getPrefs(context).edit().putBoolean(KEY_GLASS_LIQUID, enabled).apply()
     }
-    /** 自用学习版：液态玻璃「浓郁」样式（苹果/澎湃同款：厚亮边、彩虹色散边、奶白高光、按下鼓起回弹），默认开。 */
+    /** 自用学习版：液态玻璃「iOS」样式（通透键面、边缘厚度、月牙高光、按下鼓起回弹），默认开。 */
     const val KEY_GLASS_LIQUID_RICH = "glass_liquid_rich"
     fun glassLiquidRich(context: Context): Boolean =
         getPrefs(context).getBoolean(KEY_GLASS_LIQUID_RICH, true)

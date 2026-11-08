@@ -123,64 +123,59 @@ internal fun Modifier.liquidGlassCap(cap: Modifier, radius: Dp): Modifier = comp
     if (!rich) return@composed observed.then(liquidRefraction(radius)).then(cap).then(liquidRim(radius, dark, held))
     // 浓郁样式：按下像水珠一样鼓起，松手带一点回弹（弹簧动画，只动这一个键的图层，不重排布局）。
     val bulge by androidx.compose.animation.core.animateFloatAsState(
-        targetValue = if (held.value) 1.07f else 1f,
+        targetValue = if (held.value) 1.12f else 1f,
         animationSpec = androidx.compose.animation.core.spring(
-            dampingRatio = if (held.value) .7f else .38f, stiffness = if (held.value) 900f else 420f),
+            dampingRatio = if (held.value) .6f else .45f, stiffness = if (held.value) 700f else 380f),
         label = "liquidBulge")
     observed.then(Modifier.graphicsLayer { scaleX = bulge; scaleY = bulge })
         .then(liquidRefraction(radius)).then(cap).then(liquidRichRim(radius, dark, held))
 }
 
 /**
- * 浓郁样式（参考澎湃/iOS 控制中心）：
- * 1. 上半部一层奶白高光，像厚玻璃顶面的反光；
- * 2. 一圈低透明度的彩虹色散边（沿边一周换色相），模拟玻璃边缘的折射；
- * 3. 外面一道较粗的白亮边，左上最亮、右下回光；
- * 4. 按住时键面整体变亮一档，边更亮。
- * 背后应用的画面输入法读不到，透镜弯折做不了，只靠系统窗口模糊打底。
+ * iOS 样式（用户 11-08：彩虹边那版不好看，要 iOS 26 的液态玻璃）：
+ * - 不加彩色、不加奶白：键面保持通透，只靠系统窗口模糊打底；
+ * - 边缘一圈「厚度」：内侧几 dp 的明暗过渡（上沿亮、下沿略暗），像透镜边把光聚起来；
+ * - 两道月牙高光：左上一道亮的、右下一道弱的回光，中间断开，不是整圈描边；
+ * - 按住时键面略亮，鼓起由外面的弹簧动画做。
+ * 背后应用的画面输入法读不到，真正的透镜弯折做不了。
  */
 private fun liquidRichRim(radius: Dp, dark: Boolean, held: androidx.compose.runtime.State<Boolean>): Modifier =
     Modifier.drawWithCache {
         val w = size.width
         val h = size.height
-        val stroke = 1.3f * density
+        val stroke = 1.1f * density
         val inset = stroke / 2f
         val corner = (radius.toPx() - inset).coerceIn(0f, size.minDimension / 2f)
         val bounds = Rect(inset, inset, w - inset, h - inset)
         val visible = bounds.width > 0f && bounds.height > 0f
         val path = Path().apply { addRoundRect(RoundRect(bounds, CornerRadius(corner))) }
-        val innerInset = stroke * 1.6f
-        val inner = Path().apply {
-            addRoundRect(RoundRect(Rect(innerInset, innerInset, w - innerInset, h - innerInset),
-                CornerRadius((corner - innerInset).coerceAtLeast(0f))))
-        }
-        val sheen = Brush.verticalGradient(
-            0f to Color.White.copy(alpha = if (dark) .20f else .42f),
-            .5f to Color.White.copy(alpha = if (dark) .05f else .12f),
-            1f to Color.White.copy(alpha = 0f),
-        )
-        val bottomGlow = Brush.verticalGradient(
-            .7f to Color.White.copy(alpha = 0f), 1f to Color.White.copy(alpha = if (dark) .10f else .16f))
-        val rainbowAlpha = if (dark) .55f else .42f
-        val rainbow = Brush.sweepGradient(
-            listOf(Color(0xFF5AC8FA), Color(0xFFAF52DE), Color(0xFFFF2D55), Color(0xFFFFCC00),
-                Color(0xFF34C759), Color(0xFF5AC8FA)).map { it.copy(alpha = rainbowAlpha) },
-            Offset(w / 2f, h / 2f))
-        val rim = Brush.linearGradient(
-            listOf(Color.White.copy(alpha = if (dark) .85f else .95f), Color.White.copy(alpha = .18f),
-                Color.White.copy(alpha = .10f), Color.White.copy(alpha = if (dark) .45f else .6f)),
-            Offset.Zero, Offset(w, h))
-        val heldFill = Color.White.copy(alpha = if (dark) .10f else .16f)
+        val band = (4f * density).coerceAtMost(size.minDimension / 4f)
+        // 边缘厚度：只画在内侧一条带里（宽 2×band 的描边，被裁掉外半）。
+        val thickness = Brush.verticalGradient(
+            0f to Color.White.copy(alpha = if (dark) .16f else .30f),
+            .45f to Color.White.copy(alpha = 0f),
+            .75f to Color.Black.copy(alpha = 0f),
+            1f to Color.Black.copy(alpha = if (dark) .14f else .07f))
+        // 月牙高光：沿对角线，左上亮、中段断开、右下弱回光。
+        val specular = Brush.linearGradient(
+            0f to Color.White.copy(alpha = if (dark) .95f else 1f),
+            .28f to Color.White.copy(alpha = 0f),
+            .72f to Color.White.copy(alpha = 0f),
+            1f to Color.White.copy(alpha = if (dark) .45f else .65f),
+            start = Offset.Zero, end = Offset(w, h))
+        // 浅色背景上外沿一道极淡的暗线，玻璃才有轮廓。
+        val outline = Color.Black.copy(alpha = if (dark) .0f else .06f)
+        val heldFill = Color.White.copy(alpha = if (dark) .08f else .14f)
         onDrawWithContent {
             if (visible) clipPath(path) {
-                drawPath(path, sheen)
-                drawPath(path, bottomGlow)
                 if (held.value) drawPath(path, heldFill)
-                drawPath(inner, rainbow, style = Stroke(stroke * 1.4f))
-                drawPath(path, rim, style = Stroke(if (held.value) stroke * 1.8f else stroke))
+                drawPath(path, thickness, style = Stroke(band * 2f))
+                if (outline.alpha > 0f) drawPath(path, outline, style = Stroke(stroke * .8f))
+                drawPath(path, specular, style = Stroke(if (held.value) stroke * 1.6f else stroke))
             }
             drawContent()
         }
+    }
     }
 
 /**
