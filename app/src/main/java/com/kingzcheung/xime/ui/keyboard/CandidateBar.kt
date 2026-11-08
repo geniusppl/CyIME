@@ -997,6 +997,8 @@ fun CandidateItem(
     commentFontFamily: androidx.compose.ui.text.font.FontFamily = androidx.compose.ui.text.font.FontFamily.Default,
     onLongClick: (() -> Unit)? = null,
     opaqueComment: Boolean = false,
+    /** 注释是英文释义：字号比拼音注释大一号（自用学习版，用户 11-08 要求）。 */
+    glossComment: Boolean = false,
     textShadow: androidx.compose.ui.graphics.Shadow? = null,
     /** 纠错来的候选：引擎给的逐音节纠正，代替拼音注释标出怎么改的。 */
     correction: String = "",
@@ -1059,7 +1061,7 @@ fun CandidateItem(
                     else androidx.compose.ui.text.AnnotatedString(comment),
                 modifier = Modifier.candidateBaseline(fontSize),
                 color = commentColor,
-                fontSize = (fontSize.value * 11f / 19f).sp,
+                fontSize = (fontSize.value * candidateCommentScale(glossComment)).sp,
                 fontWeight = FontWeight.Normal,
                 maxLines = 1,
                 fontFamily = commentFontFamily,
@@ -1069,6 +1071,9 @@ fun CandidateItem(
         }
     }
 }
+
+/** 候选后那段小字占候选字号的比例：拼音等注释 11/19，英文释义大一号 14/19。 */
+internal fun candidateCommentScale(gloss: Boolean): Float = if (gloss) 14f / 19f else 11f / 19f
 
 /** 候选后面那段小字：有纠错显示纠错，否则显示注释（和 [CandidateItem] 一致）。 */
 internal fun candidateSecondaryText(comment: String, correction: String): AnnotatedString =
@@ -1538,7 +1543,7 @@ internal fun FixedCandidateStrip(
                 val secondaryText = candidateSecondaryText(shownComments.getOrElse(index) { "" },
                     if (index < candidates.size) correctedCandidates[all[index]].orEmpty() else "")
                 val secondary = if (secondaryText.isEmpty()) 0 else measurer.measure(secondaryText,
-                    inheritedTextStyle.merge(TextStyle(fontSize = (fontSize.value * 11f / 19f).sp,
+                    inheritedTextStyle.merge(TextStyle(fontSize = (fontSize.value * candidateCommentScale(commentsAreGlosses)).sp,
                         fontWeight = FontWeight.Normal, fontFamily = AppFonts.commentFontFamily)), softWrap = false).size.width + with(density) { 3.dp.roundToPx() }
                 bodyWidth(index) + secondary
             }
@@ -1650,7 +1655,7 @@ internal fun FixedCandidateStrip(
                 }, visuals.textColor,
                     comment = shownComments.getOrElse(index) { "" }, isSelected = index == focused,
                     accentColor = visuals.accentColor, selectedTextColor = visuals.selectedTextColor,
-                    opaqueComment = visuals.opaqueComments,
+                    opaqueComment = visuals.opaqueComments, glossComment = commentsAreGlosses,
                     textShadow = visuals.textShadow,
                     fontSize = fontSize, candidateFontFamily = AppFonts.candidateFontFamily,
                     commentFontFamily = AppFonts.commentFontFamily,
@@ -1773,7 +1778,7 @@ private fun ScrollableCandidateRow(
             }, visuals.textColor,
                 comment = comments.getOrElse(index) { "" }, isSelected = index == focused,
                 accentColor = visuals.accentColor, selectedTextColor = visuals.selectedTextColor,
-                opaqueComment = visuals.opaqueComments,
+                opaqueComment = visuals.opaqueComments, glossComment = glossBodyWidthAt != null,
                 textShadow = visuals.textShadow,
                 fontSize = fontSize, candidateFontFamily = AppFonts.candidateFontFamily,
                 commentFontFamily = AppFonts.commentFontFamily,

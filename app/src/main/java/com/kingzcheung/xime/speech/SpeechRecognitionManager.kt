@@ -501,11 +501,30 @@ class SpeechRecognitionManager(
                 record.release()
                 null
             } else {
+                attachNoiseSuppression(record)
                 record
             }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to create AudioRecord", e)
             null
+        }
+    }
+
+    // 自用学习版（用户 11-08：背景音吵时认不准）：手机自带的降噪挂到麦克风上，没有就算了。
+    // 每次录音一个会话；只留最近两次（预启动那条和正在录的那条），旧的放掉。
+    private val noiseEffects = ArrayDeque<android.media.audiofx.AudioEffect>()
+
+    private fun attachNoiseSuppression(record: AudioRecord) {
+        try {
+            if (!android.media.audiofx.NoiseSuppressor.isAvailable()) return
+            val ns = android.media.audiofx.NoiseSuppressor.create(record.audioSessionId) ?: return
+            ns.enabled = true
+            synchronized(noiseEffects) {
+                noiseEffects.addLast(ns)
+                while (noiseEffects.size > 2) try { noiseEffects.removeFirst().release() } catch (_: Exception) { }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "NoiseSuppressor unavailable", e)
         }
     }
 
