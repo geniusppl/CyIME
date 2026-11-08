@@ -2784,6 +2784,10 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
         val recentClipboard = service.recentClipboardItemsState.value
         val clipboardChoice = if (service.candidateState.value.isShowingRecentClipboard)
             com.kingzcheung.xime.clipboard.ClipboardLinkChoices.expandItems(recentClipboard).getOrNull(index) else null
+        if (clipboardChoice?.action == com.kingzcheung.xime.clipboard.ClipboardLinkChoices.Action.SPLIT) {
+            service.keyboardViewModel.pushOverlay(com.kingzcheung.xime.keyboard.OverlayRoute.SplitWords(clipboardChoice.text))
+            return
+        }
         if (clipboardChoice != null) {
             // 干净链接、BV 号也算用掉了那一条：按原文标记，下次不再出现在候选栏。
             service.textCommit.selectClipboardItem(clipboardChoice.text, source = recentClipboard[clipboardChoice.source].text)

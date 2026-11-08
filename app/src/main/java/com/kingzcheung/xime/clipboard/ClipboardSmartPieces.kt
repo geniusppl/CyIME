@@ -73,6 +73,19 @@ internal object ClipboardSmartPieces {
         return found.entries.map { Piece(it.value, it.key) }.take(MAX_PIECES)
     }
 
+    /**
+     * 「智能整理」：竖线、----、制表符分开的字段各占一行，链接去掉跟踪参数，每行去掉首尾空白，
+     * 连续空行只留一个。普通句子里的标点不动。
+     */
+    fun tidy(source: String): String {
+        val lines = source.trim().split(Regex("\\s*(?:-{3,}|[|｜\\t])\\s*|\\r?\\n"))
+            .map { line -> linkPattern.replace(line.trim()) { ClipboardLinkChoices.cleanLink(it.value.replace(trailingPunctuation, "")) +
+                it.value.substring(it.value.replace(trailingPunctuation, "").length) } }
+        val out = mutableListOf<String>()
+        for (line in lines) if (line.isNotEmpty() || out.lastOrNull()?.isNotEmpty() == true) out += line
+        return out.joinToString("\n").trim()
+    }
+
     /** 按钮上显示的字：太长的只留头尾。 */
     fun shortLabel(value: String, max: Int = 18): String =
         if (value.length <= max) value else value.take(max - 7) + "…" + value.takeLast(6)

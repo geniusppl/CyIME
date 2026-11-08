@@ -8,7 +8,10 @@ package com.kingzcheung.xime.clipboard
  */
 internal object ClipboardLinkChoices {
     /** 候选栏的一项：[text] 是显示和粘贴的文字，[source] 是它来自哪一条剪贴板记录（标记已用时用原文）。 */
-    data class Choice(val source: Int, val text: String)
+    data class Choice(val source: Int, val text: String, val action: Action = Action.PASTE)
+
+    /** 自用学习版：胶囊里除了贴文字，最新一条还给「整理」（分好行再贴）和「分词」（打开滑动选词）。 */
+    enum class Action { PASTE, TIDY, SPLIT }
 
     /**
      * 带链接的那条先给干净链接（和原文不同才给）、BV 号（B 站视频才给），原文跟在后面：
@@ -21,12 +24,26 @@ internal object ClipboardLinkChoices {
     /** 同 [expand]，但记下的密码（#95）只给原文一项，不拆链接。 */
     fun expandItems(items: List<ClipboardItem>): List<Choice> = items.flatMapIndexed { index, item ->
         if (item.sensitive) listOf(Choice(index, item.text))
-        else linkChoices(item.text).map { Choice(index, it) } + Choice(index, item.text)
+        else linkChoices(item.text).map { Choice(index, it) } + Choice(index, item.text) + toolChoices(index, item.text)
+    }
+
+    /** 只给最新一条：能拆出片段或有分隔、换行的，加「整理」；字数够多的加「分词」。 */
+    private fun toolChoices(index: Int, text: String): List<Choice> {
+        if (index != 0 || text.length < 8) return emptyList()
+        val tidy = ClipboardSmartPieces.tidy(text)
+        return listOfNotNull(
+            Choice(index, tidy, Action.TIDY).takeIf { tidy != text.trim() },
+            Choice(index, text, Action.SPLIT),
+        )
     }
 
     /** 候选栏上显示的字：密码显示成圆点，点了照常贴原文。 */
-    fun shownText(items: List<ClipboardItem>, choice: Choice): String =
-        if (items.getOrNull(choice.source)?.sensitive == true) SENSITIVE_MASK else choice.text
+    fun shownText(items: List<ClipboardItem>, choice: Choice): String = when {
+        choice.action == Action.TIDY -> "✎ 智能整理"
+        choice.action == Action.SPLIT -> "拆 分词"
+        items.getOrNull(choice.source)?.sensitive == true -> SENSITIVE_MASK
+        else -> choice.text
+    }
 
     /** 记下的密码在剪贴板面板和候选栏上显示成这样（#95）。 */
     const val SENSITIVE_MASK = "••••••••"
