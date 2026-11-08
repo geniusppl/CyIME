@@ -793,7 +793,7 @@ private fun CompactClipboardFilter(label: String, isSelected: Boolean, onClick: 
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
 @Composable
 private fun ClipboardRecordCard(
     card: ClipboardCard, pinned: Boolean, chosen: Boolean, selecting: Boolean,
@@ -830,7 +830,7 @@ private fun ClipboardRecordCard(
         when (card) {
             is ClipboardCard.Text -> {
                 val pieces = if (masked || previewHeight != null || selecting || onPiece == null) emptyList()
-                    else remember(card.item.text) { com.kingzcheung.xime.clipboard.ClipboardSmartPieces.extract(card.item.text) }
+                    else remember(card.item.text) { com.kingzcheung.xime.clipboard.ClipboardSmartPieces.pieces(card.item.text) }
                 Column(Modifier.align(Alignment.CenterStart).fillMaxWidth()) {
                     Text(if (masked) com.kingzcheung.xime.clipboard.ClipboardLinkChoices.SENSITIVE_MASK else card.item.text,
                         Modifier.fillMaxWidth()
@@ -843,18 +843,25 @@ private fun ClipboardRecordCard(
                         fontSize = 16.sp, lineHeight = 23.sp,
                         maxLines = if (oneLine) 1 else if (previewHeight != null) 3 else maxLines,
                         overflow = TextOverflow.Ellipsis)
-                    if (pieces.isNotEmpty() && onPiece != null) Row(
-                        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
-                            .padding(start = 8.dp, end = 8.dp, bottom = 8.dp),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    // 识别出的片段：自动换行排开（窄卡片也看得全），每个按钮写明是什么，长串只显示头尾。
+                    if (pieces.isNotEmpty() && onPiece != null) FlowRow(
+                        Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, bottom = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         pieces.forEach { piece ->
-                            Text(piece, Modifier.widthIn(max = 240.dp).clip(RoundedCornerShape(6.dp))
-                                .background(colors.onSurface.copy(alpha = .07f))
-                                .clickable { onPiece(piece) }
+                            Row(Modifier.clip(RoundedCornerShape(6.dp))
+                                .background(colors.primary.copy(alpha = .10f))
+                                .clickable(onClickLabel = "只贴${piece.kind.label}") { onPiece(piece.value) }
                                 .padding(horizontal = 8.dp, vertical = 5.dp)
-                                .testTag("clipboard-piece:${card.key}:$piece"),
-                                color = colors.onSurfaceVariant, fontSize = 14.sp, lineHeight = 18.sp,
-                                maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                .testTag("clipboard-piece:${card.key}:${piece.kind}"),
+                                verticalAlignment = Alignment.CenterVertically) {
+                                Text(piece.kind.label, color = colors.primary, fontSize = 12.sp, lineHeight = 16.sp,
+                                    fontWeight = FontWeight.Medium, maxLines = 1)
+                                Spacer(Modifier.width(4.dp))
+                                Text(com.kingzcheung.xime.clipboard.ClipboardSmartPieces.shortLabel(piece.value),
+                                    color = colors.onSurface, fontSize = 13.sp, lineHeight = 17.sp,
+                                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
                         }
                     }
                 }
