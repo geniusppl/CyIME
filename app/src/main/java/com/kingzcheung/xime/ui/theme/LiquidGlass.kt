@@ -128,7 +128,8 @@ internal fun Modifier.liquidGlassCap(cap: Modifier, radius: Dp): Modifier = comp
             dampingRatio = if (held.value) .6f else .45f, stiffness = if (held.value) 700f else 380f),
         label = "liquidBulge")
     observed.then(Modifier.graphicsLayer { scaleX = bulge; scaleY = bulge })
-        .then(liquidRefraction(radius)).then(cap).then(liquidRichRim(radius, dark, held))
+        // iOS 样式不做边缘折射：截图里折射那一圈像个内框，反而不像玻璃（11-09 用户反馈）。
+        .then(cap).then(liquidRichRim(radius, dark, held))
 }
 
 /**
@@ -158,18 +159,17 @@ private fun liquidRichRim(radius: Dp, dark: Boolean, held: androidx.compose.runt
             1f to Color.Black.copy(alpha = if (dark) .14f else .07f))
         // 月牙高光：沿对角线，左上亮、中段断开、右下弱回光。
         val specular = Brush.linearGradient(
-            0f to Color.White.copy(alpha = if (dark) .95f else 1f),
-            .28f to Color.White.copy(alpha = 0f),
-            .72f to Color.White.copy(alpha = 0f),
-            1f to Color.White.copy(alpha = if (dark) .45f else .65f),
+            0f to Color.White.copy(alpha = if (dark) .55f else .85f),
+            .35f to Color.White.copy(alpha = 0f),
+            .75f to Color.White.copy(alpha = 0f),
+            1f to Color.White.copy(alpha = if (dark) .22f else .35f),
             start = Offset.Zero, end = Offset(w, h))
         // 浅色背景上外沿一道极淡的暗线，玻璃才有轮廓。
-        val outline = Color.Black.copy(alpha = if (dark) .0f else .06f)
+        val outline = Color.Black.copy(alpha = if (dark) .0f else .035f)
         val heldFill = Color.White.copy(alpha = if (dark) .08f else .14f)
         onDrawWithContent {
             if (visible) clipPath(path) {
                 if (held.value) drawPath(path, heldFill)
-                drawPath(path, thickness, style = Stroke(band * 2f))
                 if (outline.alpha > 0f) drawPath(path, outline, style = Stroke(stroke * .8f))
                 drawPath(path, specular, style = Stroke(if (held.value) stroke * 1.6f else stroke))
             }

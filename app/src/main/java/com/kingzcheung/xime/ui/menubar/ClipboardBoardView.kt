@@ -585,10 +585,10 @@ internal fun ClipboardBoardView(
                 val pinnedHeight = clipboardPinnedPreviewHeight(stableRecordsHeight).dp
                 LazyVerticalStaggeredGrid(StaggeredGridCells.Fixed(columns), Modifier.fillMaxSize().testTag("clipboard-records"),
                     state = gridState,
-                    contentPadding = if (listLayout) PaddingValues(horizontal = 4.dp, vertical = 0.dp)
+                    contentPadding = if (listLayout) PaddingValues(horizontal = 14.dp, vertical = 6.dp)
                         else PaddingValues(horizontal = 6.dp, vertical = 4.dp),
                     horizontalArrangement = Arrangement.spacedBy(if (listLayout) 0.dp else 6.dp),
-                    verticalItemSpacing = if (listLayout) 0.dp else 6.dp) {
+                    verticalItemSpacing = if (listLayout) 8.dp else 6.dp) {
                     if (incognito) item(key = "incognito", span = StaggeredGridItemSpan.FullLine) {
                         ClipboardIncognitoNotice(onIncognitoOff)
                     }
@@ -615,7 +615,7 @@ internal fun ClipboardBoardView(
                         items(records, key = { it.key }) { card ->
                             val chosen = card.key in selected
                             ClipboardRecordCard(card = card, pinned = card.key in pins, chosen = chosen,
-                                maxLines = if (listLayout) minOf(cardMaxLines, 2) else cardMaxLines, listRow = listLayout,
+                                maxLines = if (listLayout) 1 else cardMaxLines, listRow = listLayout,
                                 masked = card is ClipboardCard.Text && card.item.sensitive && card.key !in revealed,
                                 selecting = selecting, keyboardFocused = keyboard?.active == true && card.key == focused,
                                 // Pictures share the pinned preview height: a tall screenshot must not fill the board.
@@ -817,24 +817,20 @@ private fun ClipboardRecordCard(
     modifier: Modifier = Modifier,
     /** 点了卡片下面识别出的小片段（邮箱、链接、密码…）：只贴那一段。 */
     onPiece: ((String) -> Unit)? = null,
-    /** 列表样式：整行铺满，不画卡片底色和圆角，底下一条细分隔线。 */
+    /** 列表样式（照豆包）：整行白色大圆角卡片、一行字、右边 ⋮，识别片段是下面一排灰色小块。 */
     listRow: Boolean = false,
 ) {
     val colors = MaterialTheme.colorScheme
     val glass = LocalKeyboardInputPreferences.current.frostedGlass
     val highlighted = chosen || keyboardFocused
-    val shape = if (listRow) RoundedCornerShape(8.dp) else RoundedCornerShape(clipboardCardCorner(previewHeight == ClipboardPinnedRowHeight))
-    val divider = colors.onSurface.copy(alpha = .10f)
+    val shape = if (listRow) RoundedCornerShape(16.dp) else RoundedCornerShape(clipboardCardCorner(previewHeight == ClipboardPinnedRowHeight))
     val oneLine = previewHeight == ClipboardPinnedRowHeight
     val liquid = com.kingzcheung.xime.ui.theme.LiquidGlass.surfacesOn()
     BoxWithConstraints(modifier.fillMaxWidth()
         .then(if (previewHeight != null) Modifier.height(previewHeight) else Modifier)
-        .then(if (listRow) Modifier.drawBehind {
-                val y = size.height - .5.dp.toPx() / 2f
-                drawLine(divider, Offset(8.dp.toPx(), y), Offset(size.width - 8.dp.toPx(), y), .5.dp.toPx())
-            } else Modifier)
         .clip(shape)
-        .then(if (listRow) { if (highlighted) Modifier.background(colors.secondaryContainer.copy(alpha = .6f)) else Modifier }
+        .then(if (listRow) Modifier.background(if (highlighted) colors.secondaryContainer
+                else frostedKeyColor(colors.surfaceContainerLowest, colors.onSurface, glass))
             else Modifier.background(frostedKeyColor(if (highlighted) colors.secondaryContainer else clipboardCardColor(),
                 colors.onSurface, glass)))
         // 黑白主题深色是纯黑底：卡片不铺灰，靠描边看出边界（与设置页卡片的 idleBorderAlpha 一致，#82）。
@@ -858,16 +854,32 @@ private fun ClipboardRecordCard(
                         Modifier.fillMaxWidth()
                             .heightIn(min = if (previewHeight == null && pieces.isEmpty()) ClipboardPinnedRowHeight else 0.dp)
                             .wrapContentHeight(Alignment.CenterVertically)
-                            .padding(start = if (selecting) 28.dp else if (listRow) 12.dp else 8.dp,
-                                end = if (pinned) 26.dp else if (listRow) 12.dp else 8.dp,
-                                top = if (oneLine) 0.dp else if (listRow) 11.dp else 8.dp,
-                                bottom = if (oneLine) 0.dp else if (pieces.isNotEmpty()) 4.dp else if (listRow) 11.dp else 8.dp),
+                            .padding(start = if (selecting) 28.dp else if (listRow) 16.dp else 8.dp,
+                                end = if (listRow) (if (pinned) 64.dp else 40.dp) else if (pinned) 26.dp else 8.dp,
+                                top = if (oneLine) 0.dp else if (listRow) 14.dp else 8.dp,
+                                bottom = if (oneLine) 0.dp else if (pieces.isNotEmpty()) (if (listRow) 8.dp else 4.dp)
+                                    else if (listRow) 14.dp else 8.dp),
                         color = if (highlighted) colors.onSecondaryContainer else colors.onSurface,
                         fontSize = 16.sp, lineHeight = 23.sp,
                         maxLines = if (oneLine) 1 else if (previewHeight != null) 3 else maxLines,
                         overflow = TextOverflow.Ellipsis)
                     // 识别出的片段：自动换行排开（窄卡片也看得全），每个按钮写明是什么，长串只显示头尾。
-                    if (pieces.isNotEmpty() && onPiece != null) FlowRow(
+                    if (listRow && pieces.isNotEmpty() && onPiece != null) Row(
+                        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
+                            .padding(start = 16.dp, end = 16.dp, bottom = 14.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        pieces.forEach { piece ->
+                            Text(com.kingzcheung.xime.clipboard.ClipboardSmartPieces.shortLabel(piece.value),
+                                Modifier.clip(RoundedCornerShape(8.dp))
+                                    .background(colors.onSurface.copy(alpha = .06f))
+                                    .clickable(onClickLabel = "只贴${piece.kind.label}") { onPiece(piece.value) }
+                                    .padding(horizontal = 12.dp, vertical = 7.dp)
+                                    .testTag("clipboard-piece:${card.key}:${piece.kind}"),
+                                color = colors.onSurfaceVariant, fontSize = 14.sp, lineHeight = 18.sp,
+                                maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                    else if (pieces.isNotEmpty() && onPiece != null) FlowRow(
                         Modifier.fillMaxWidth().padding(start = if (listRow) 12.dp else 8.dp, end = 8.dp, bottom = 8.dp),
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                         verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -915,8 +927,14 @@ private fun ClipboardRecordCard(
                 }
             }
         }
+        if (listRow && !selecting) Box(Modifier.align(Alignment.TopEnd).padding(top = 6.dp, end = 4.dp).size(36.dp)
+            .clip(RoundedCornerShape(50)).clickable(onClickLabel = "更多操作", onClick = onLongClick)
+            .testTag("clipboard-more:${card.key}"), contentAlignment = Alignment.Center) {
+            Icon(Icons.Default.MoreVert, "更多操作", Modifier.size(20.dp), tint = colors.onSurfaceVariant)
+        }
         if (pinned) ClipboardCardBadge(Icons.Default.Lock, "已固定",
-            Modifier.align(if (oneLine) Alignment.CenterEnd else Alignment.TopEnd).padding(4.dp), "clipboard-pin:${card.key}")
+            Modifier.align(if (listRow) Alignment.TopEnd else if (oneLine) Alignment.CenterEnd else Alignment.TopEnd)
+                .padding(top = if (listRow) 14.dp else 4.dp, end = if (listRow) 40.dp else 4.dp), "clipboard-pin:${card.key}")
         if (selecting) {
             ClipboardCardBadge(if (chosen) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
                 if (chosen) "已选" else "未选", Modifier.align(Alignment.TopStart).padding(4.dp)

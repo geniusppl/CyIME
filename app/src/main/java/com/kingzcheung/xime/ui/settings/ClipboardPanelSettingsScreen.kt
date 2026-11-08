@@ -110,7 +110,7 @@ private fun ClipboardPanelDisplaySettings(onNavigateToGroups: () -> Unit) {
         SettingsToggleItem(
             icon = Icons.TwoTone.ContentPaste,
             title = "列表样式",
-            subtitle = "像豆包输入法：一条一行、细线隔开，最多两行；关掉回到卡片",
+            subtitle = "像豆包输入法：一条一张白卡片、一行字、右边 ⋮，识别出的邮箱密码排在下面；关掉回到多列卡片",
             checked = listLayout,
             onCheckedChange = { on -> listLayout = on; prefs.edit().putBoolean(CLIPBOARD_LIST_LAYOUT_KEY, on).apply() },
         )
