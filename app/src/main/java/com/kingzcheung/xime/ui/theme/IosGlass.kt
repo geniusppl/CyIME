@@ -233,7 +233,8 @@ internal class GlassKeyPress(private val density: Float) : LensMotion() {
     private var dropping = false
     private var unit = 1f
 
-    override fun busy() = down || dropping
+    // 按住不动时不跑帧（长按退格连发时省电），移动和松手都会 wake。
+    override fun busy() = dropping
 
     override fun afterStep() {
         wobble(pullX, jellyX, unit)
@@ -369,7 +370,7 @@ internal class ToolbarLensMotion(private val density: Float) : LensMotion() {
 
     private val last: Int get() = max(0, count - 1)
 
-    override fun busy() = down || dropping || !settled
+    override fun busy() = dropping || (!settled && !down)
 
     override fun afterStep() {
         wobble(lens, jelly, 1f)
