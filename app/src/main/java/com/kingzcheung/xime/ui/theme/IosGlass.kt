@@ -1,166 +1,645 @@
 package com.kingzcheung.xime.ui.theme
 
-import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.spring
-import androidx.compose.animation.core.tween
+import android.os.Build
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.unit.Constraints
 import com.kyant.backdrop.BackdropEffectScope
+import com.kyant.backdrop.backdrops.rememberCanvasBackdrop
+import com.kyant.backdrop.drawBackdrop
 import com.kyant.backdrop.effects.runtimeShaderEffect
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.channels.Channel
+import kotlin.math.PI
 import kotlin.math.abs
+import kotlin.math.ceil
 import kotlin.math.exp
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.roundToInt
 import kotlin.math.sign
 import kotlin.math.sqrt
 
 /*
- * iOS 液态玻璃按键（用户 11-09：参考 FlClash 的液态玻璃和选中动效）。
- * 数值移植自 chen08209/prism_ui（FlClash 的界面库，GPL-3.0，与 CyIME 同许可）：
- * - 着色器：shaders/liquid_glass.frag 的「凸透镜」分支 + LiquidGlassStyle.lens 参数；
- * - 手感：navigation_dock.dart 的 ElasticPress（按下鼓起、跟手拉伸、松手回弹）和指尖光。
+ * iOS 液态玻璃透镜（用户 11-09：照 FlClash 的底部浮动导航栏做玻璃和切换动效，按键和工具栏都要）。
+ * 数值和做法移植自 chen08209/prism_ui（FlClash 的界面库，GPL-3.0，与 CyIME 同许可）：
+ * - 着色器：shaders/liquid_glass.frag 的「凸透镜」分支 + LiquidGlassStyle.lens 参数（scale(lift) 随抬起加强）；
+ * - 动效：navigation_dock.dart 的 FloatingNavigationBar —— _Spring（目标可每帧改、速度连续）、
+ *   _liftSpring 抬起、_travelSpring 滑到目标、_jellySpring + _wobble（按速度拉长、刹车压扁）、
+ *   _settleSpring 回弹、_fadeSpring 淡出、指尖光（_glowInSpring / _glowOutSpring）、甩动投射。
+ * 按键（[GlassKeyPress]）和工具栏（[ToolbarLensMotion]）共用同一套弹簧和同一个着色器 [glassLens]。
  */
 
-// ElasticPress：鼓起最多 1/4，且不超过 maxGrowth（键小，取 10dp，免得压住邻键太多）。
-private const val PRESS_GROWTH = .25f
-private const val MAX_GROWTH_DP = 10f
-private const val PULL_LIMIT = 7f / 32f
-private const val PULL_STRETCH = .5f
+// ---------------------------------------------------------------- 弹簧
+
+/** 弹簧参数：刚度 + 阻尼比（质量 1）。 */
+internal class LensSpringSpec(val stiffness: Float, val ratio: Float) {
+    val damping: Float = 2f * ratio * sqrt(stiffness)
+}
+
+/** Flutter 的 SpringDescription.withDurationAndBounce：刚度 (2π/d)²，阻尼比 1 - bounce。 */
+private fun durationBounce(seconds: Float, bounce: Float = 0f): LensSpringSpec {
+    val w = (2.0 * PI / seconds).toFloat()
+    return LensSpringSpec(w * w, 1f - bounce)
+}
+
+/** prism_ui navigation_dock.dart 顶部那组弹簧，原样照搬。 */
+internal object LensSprings {
+    val track = durationBounce(.12f)
+    val press = LensSpringSpec(311f, .593f)
+    val follow = LensSpringSpec(1024f, .9f)
+    val lift = durationBounce(.25f)
+    val travel = durationBounce(.4f, .15f)
+    val jelly = LensSpringSpec(100f, .4f)
+    val settle = durationBounce(.5f, .32f)
+    val fade = durationBounce(.2f)
+    val glowIn = durationBounce(.1f)
+    val glowOut = durationBounce(.5f)
+}
+
+// 果冻：速度 3 格/秒拉到头，拉长 .2；刹车 25 格/秒² 压扁 .15；高度变化是宽度的 1.4 倍。
+private const val JELLY_SPEED = 3f
+private const val JELLY_STRETCH = .2f
+private const val JELLY_BRAKE = 25f
+private const val JELLY_SQUASH = .15f
+internal const val JELLY_ASPECT = 1.4f
+private const val JELLY_REST = 3e-3f
+// 抬起到 97.5% 才放下；离目标 .04 格以内算到了。
 private const val LIFT_SNAP = .975f
-// 指尖光：半径 28dp，松手时扩大 3 倍淡出；峰值键上调到 .10（原 .06 是给整条导航栏的）。
+private const val LIFT_RELEASE = .04f
+// 指尖光：半径 28dp，松手时扩大 3 倍淡出；强度按 glow² 走。
+// 原版峰值 .06 是给整条导航栏的，键和工具栏小、浅色主题上要看得出，提到 .16。
 private const val GLOW_REACH_DP = 28f
 private const val GLOW_GROWTH = 3f
-private const val GLOW_PEAK = .10f
+private const val GLOW_PEAK = .16f
 private const val GLOW_WASH = .35f
 
-private val pressSpring = spring<Float>(dampingRatio = .593f, stiffness = 311f)
-// 120ms 无回弹：刚度 ≈ (2π/0.12)²。
-private val trackSpring = spring<Float>(dampingRatio = 1f, stiffness = 2700f)
+private fun saturate(value: Float): Float = 1f - 2f / (exp(2f * value) + 1f)
 
-/** 弹性按压：按下鼓起，拖动时往手指方向拉长，松手弹回；轻点也先鼓满再回（UIKit 的做法）。 */
+internal fun rubberBand(overshoot: Float, limit: Float): Float {
+    if (limit <= 0f) return 0f
+    val pull = 1f - 1f / (abs(overshoot) * .55f / limit + 1f)
+    return limit * pull * sign(overshoot)
+}
+
+/**
+ * prism_ui 的 _Spring：目标随时改，速度不断；能读出加速度（_wobble 判断刹车用）。
+ * 值放在快照状态里，绘制/布局读它会跟着重画；推进由 [LensMotion] 的帧循环统一做。
+ */
 @Stable
-internal class ElasticKeyPress(private val scope: CoroutineScope, private val density: Float) {
-    val lift = Animatable(0f)
-    val pullX = Animatable(0f)
-    val pullY = Animatable(0f)
-    val glow = Animatable(0f)
-    val glowSpread = Animatable(0f)
-    var glowAt = Offset.Zero
+internal class LensSpring(initial: Float, private val rest: Float = 1e-3f) {
+    private val state = mutableFloatStateOf(initial)
+    val value: Float get() = state.floatValue
+    var velocity = 0f
         private set
-    private var releaseJob: Job? = null
+    var target = initial
+        private set
+    var moving = false
+        private set
+    private var spec: LensSpringSpec = LensSprings.press
 
-    private fun rubberBand(overshoot: Float, limit: Float): Float {
-        if (limit <= 0f) return 0f
-        val pull = 1f - 1f / (abs(overshoot) * .55f / limit + 1f)
-        return limit * pull * sign(overshoot)
+    val acceleration: Float
+        get() = if (!moving) 0f else spec.stiffness * (target - value) - spec.damping * velocity
+
+    fun springTo(to: Float, with: LensSpringSpec) {
+        target = to
+        spec = with
+        moving = true
     }
 
-    fun down(at: Offset) {
-        releaseJob?.cancel()
-        glowAt = at
-        scope.launch { lift.animateTo(1f, pressSpring) }
-        scope.launch { glowSpread.snapTo(0f) }
-        scope.launch { glow.animateTo(1f, tween(100)) }
+    fun jumpTo(to: Float) {
+        target = to
+        velocity = 0f
+        moving = false
+        state.floatValue = to
+    }
+
+    /** 推进 [dt] 秒（拆成 2ms 小步，刚度最高的指尖光也稳）；返回是否还在动。 */
+    fun step(dt: Float): Boolean {
+        if (!moving) return false
+        var x = value
+        var v = velocity
+        val steps = ceil(dt / .002f).toInt().coerceIn(1, 40)
+        val h = dt / steps
+        repeat(steps) {
+            val a = spec.stiffness * (target - x) - spec.damping * v
+            v += a * h
+            x += v * h
+        }
+        if (abs(target - x) < rest && abs(v) < rest * sqrt(spec.stiffness)) {
+            x = target
+            v = 0f
+            moving = false
+        }
+        velocity = v
+        state.floatValue = x
+        return moving
+    }
+}
+
+/** 一组弹簧共用一个帧循环：有东西在动才跑，全停了就挂起等 [wake]。 */
+internal abstract class LensMotion {
+    private val wakeup = Channel<Unit>(Channel.CONFLATED)
+    protected abstract val springs: List<LensSpring>
+
+    /** 每帧弹簧推进之后调用（果冻、放下、落位都在这里判断）。 */
+    protected open fun afterStep() {}
+
+    /** 弹簧都停了但还在等事情发生（手指没抬、等抬满再放下）。 */
+    protected open fun busy(): Boolean = false
+
+    fun wake() {
+        wakeup.trySend(Unit)
+    }
+
+    suspend fun run() {
+        while (true) {
+            wakeup.receive()
+            var last = -1L
+            while (true) {
+                val now = withFrameNanos { it }
+                val dt = if (last < 0) 1f / 120f else ((now - last) / 1e9f).coerceIn(0f, 1f / 20f)
+                last = now
+                var any = false
+                for (spring in springs) if (spring.step(dt)) any = true
+                afterStep()
+                if (!any && !busy() && springs.none { it.moving }) break
+            }
+        }
+    }
+
+    /** _wobble：按透镜速度拉长、按刹车压扁；[unit] 是一格多少像素（工具栏已是格数时传 1）。 */
+    protected fun wobble(source: LensSpring, jelly: LensSpring, unit: Float) {
+        val velocity = source.velocity / unit
+        val braking = max(0f, -source.acceleration / unit * sign(velocity))
+        val target = JELLY_STRETCH * saturate(abs(velocity) / JELLY_SPEED) -
+            JELLY_SQUASH * saturate(braking / JELLY_BRAKE)
+        if (abs(target - jelly.target) > 1e-4f) jelly.springTo(target, LensSprings.jelly)
+    }
+}
+
+// ---------------------------------------------------------------- 按键
+
+// 按下鼓起最多 1/8（导航栏 _pressGrowth），且不超过 8dp（键小，免得压住邻键太多）。
+private const val PRESS_GROWTH = .125f
+private const val MAX_GROWTH_DP = 8f
+private const val PULL_LIMIT = 7f / 32f
+private const val PULL_STRETCH = .5f
+// 抬起时玻璃加强（折射、高光、暗线按 1 + .35·lift）。
+private const val KEY_LIFT_BOOST = .35f
+
+/**
+ * 按键的透镜手感，和导航栏透镜同一套：按下 _liftSpring 抬起、鼓起；拖动时透镜跟手（_followSpring，橡皮筋限位），
+ * 按速度横竖各自拉长、刹车压扁（_wobble）；松手 _settleSpring 回弹；轻点也先抬满再放下（UIKit 的做法）。
+ */
+@Stable
+internal class GlassKeyPress(private val density: Float) : LensMotion() {
+    val lift = LensSpring(0f)
+    val swell = LensSpring(0f)
+    val pullX = LensSpring(0f, rest = .05f)
+    val pullY = LensSpring(0f, rest = .05f)
+    val jellyX = LensSpring(0f, rest = JELLY_REST)
+    val jellyY = LensSpring(0f, rest = JELLY_REST)
+    val glow = LensSpring(0f)
+    val glowSpread = LensSpring(0f)
+    private val glowAtState = mutableStateOf(Offset.Zero)
+    val glowAt: Offset get() = glowAtState.value
+    override val springs = listOf(lift, swell, pullX, pullY, jellyX, jellyY, glow, glowSpread)
+    private var down = false
+    private var dropping = false
+    private var unit = 1f
+
+    override fun busy() = down || dropping
+
+    override fun afterStep() {
+        wobble(pullX, jellyX, unit)
+        wobble(pullY, jellyY, unit)
+        // _dropLift：抬满了才放下；鼓起同样等到满再用 _settleSpring 弹回。
+        if (dropping && !down && lift.value >= LIFT_SNAP && swell.value >= LIFT_SNAP) {
+            dropping = false
+            lift.springTo(0f, LensSprings.lift)
+            swell.springTo(0f, LensSprings.settle)
+        }
+    }
+
+    fun press(at: Offset, width: Float, height: Float) {
+        down = true
+        dropping = false
+        unit = max(min(width, height), 1f)
+        glowAtState.value = at
+        lift.springTo(1f, LensSprings.lift)
+        swell.springTo(1f, LensSprings.press)
+        glowSpread.jumpTo(0f)
+        glow.springTo(1f, LensSprings.glowIn)
+        wake()
     }
 
     fun move(at: Offset, origin: Offset, width: Float, height: Float) {
-        glowAt = at
+        glowAtState.value = at
         val limit = min(width, height) * PULL_LIMIT
-        scope.launch { pullX.animateTo(rubberBand(at.x - origin.x, limit), trackSpring) }
-        scope.launch { pullY.animateTo(rubberBand(at.y - origin.y, limit), trackSpring) }
+        pullX.springTo(rubberBand(at.x - origin.x, limit), LensSprings.follow)
+        pullY.springTo(rubberBand(at.y - origin.y, limit), LensSprings.follow)
+        wake()
     }
 
-    fun up() {
-        scope.launch { pullX.animateTo(0f, pressSpring) }
-        scope.launch { pullY.animateTo(0f, pressSpring) }
-        scope.launch { glowSpread.animateTo(1f, tween(500)) }
-        scope.launch { glow.animateTo(0f, tween(500)) }
-        releaseJob = scope.launch {
-            // 轻点比鼓起快：先鼓满再回。
-            while (lift.value < LIFT_SNAP && lift.targetValue == 1f) {
-                androidx.compose.runtime.withFrameNanos { }
-            }
-            lift.animateTo(0f, pressSpring)
-        }
+    fun release() {
+        down = false
+        dropping = true
+        pullX.springTo(0f, LensSprings.press)
+        pullY.springTo(0f, LensSprings.press)
+        glow.springTo(0f, LensSprings.glowOut)
+        glowSpread.springTo(1f, LensSprings.glowOut)
+        wake()
     }
+
+    /** 玻璃强度：静止 1，抬起时加强。 */
+    fun strength(): Float = 1f + KEY_LIFT_BOOST * lift.value
+
+    fun glowStrength(): Float = GLOW_PEAK * glow.value * glow.value
+
+    fun glowReach(): Float = GLOW_REACH_DP * density * (1f + GLOW_GROWTH * glowSpread.value)
 
     val modifier: Modifier = Modifier
         .pointerInput(Unit) {
             awaitEachGesture {
                 // 只旁观，不消费：不影响点击、滑动和长按。
                 val first = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
-                down(first.position)
+                press(first.position, size.width.toFloat(), size.height.toFloat())
                 val id = first.id
-                while (true) {
-                    val event = awaitPointerEvent(PointerEventPass.Initial)
-                    val change = event.changes.firstOrNull { it.id == id } ?: break
-                    if (!change.pressed) break
-                    move(change.position, first.position, size.width.toFloat(), size.height.toFloat())
+                try {
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                        val change = event.changes.firstOrNull { it.id == id } ?: break
+                        if (!change.pressed) break
+                        move(change.position, first.position, size.width.toFloat(), size.height.toFloat())
+                    }
+                } finally {
+                    release()
                 }
-                up()
             }
         }
         .graphicsLayer {
-            val swell = 1f + lift.value * min(PRESS_GROWTH, MAX_GROWTH_DP * density / max(size.maxDimension, 1f))
+            val swellScale = 1f + swell.value * min(PRESS_GROWTH, MAX_GROWTH_DP * density / max(size.maxDimension, 1f))
             val px = pullX.value
             val py = pullY.value
-            scaleX = swell * (1f + abs(px) / max(size.width, 1f) * PULL_STRETCH)
-            scaleY = swell * (1f + abs(py) / max(size.height, 1f) * PULL_STRETCH)
+            val jx = jellyX.value
+            val jy = jellyY.value
+            // 横向拉长时竖向收 1.4 倍，竖向同理；再叠 ElasticPress 的跟手拉伸。
+            val jellyW = (1f + jx - JELLY_ASPECT * jy * .5f).coerceIn(.6f, 1.6f)
+            val jellyH = (1f + jy - JELLY_ASPECT * jx * .5f).coerceIn(.6f, 1.6f)
+            scaleX = swellScale * jellyW * (1f + abs(px) / max(size.width, 1f) * PULL_STRETCH)
+            scaleY = swellScale * jellyH * (1f + abs(py) / max(size.height, 1f) * PULL_STRETCH)
             translationX = px
             translationY = py
         }
 }
 
 @Composable
-internal fun rememberElasticKeyPress(): ElasticKeyPress {
-    val scope = rememberCoroutineScope()
+internal fun rememberGlassKeyPress(): GlassKeyPress {
     val density = LocalDensity.current.density
-    return remember(scope, density) { ElasticKeyPress(scope, density) }
+    val press = remember(density) { GlassKeyPress(density) }
+    LaunchedEffect(press) { press.run() }
+    return press
 }
 
-/** LiquidGlassStyle.lens：凸透镜往外读、色散 6.5dp、上下沿高光 .6、外圈暗线 .42、两端略暗 .045。 */
-internal fun BackdropEffectScope.iosGlass(radiusPx: Float, dark: Boolean, press: ElasticKeyPress) {
-    val glow = press.glow.value
-    val spread = press.glowSpread.value
-    runtimeShaderEffect("CyImeIosGlass", IOS_GLASS_SHADER, "content") {
+// ---------------------------------------------------------------- 工具栏透镜
+
+// 透镜抬起时四周各长 4dp（导航栏 _lensGrowth 8，工具栏只有 44dp 高，减半）；
+// 透镜下的图标随抬起放大 16%（_lensMagnify）；甩动往前看 100ms（_flingProjection）；两端可多拖 .35 格。
+private const val LENS_GROWTH_DP = 4f
+internal const val LENS_MAGNIFY = .16f
+private const val FLING_PROJECTION_S = .1f
+private const val OVERDRAG = .35f
+// 停在开启的按钮上时玻璃 .6 强度，抬起到 1。
+private const val LENS_REST_STRENGTH = .6f
+
+/**
+ * 工具栏透镜（FloatingNavigationBar 的 _lens/_lift/_jelly）：位置以「格」为单位。
+ * 按下：透镜 _travelSpring 滑到按下那格并 _liftSpring 抬起；拖过超过触摸阈值后 _followSpring 跟手；
+ * 松手：甩动最多多走一格，_travelSpring 落位，抬满后放下；停下后有开启的按钮就停在它上面，没有就 _fadeSpring 淡出。
+ */
+@Stable
+internal class ToolbarLensMotion(private val density: Float) : LensMotion() {
+    val lens = LensSpring(0f)
+    val lift = LensSpring(0f)
+    val jelly = LensSpring(0f, rest = JELLY_REST)
+    val show = LensSpring(0f)
+    val glow = LensSpring(0f)
+    val glowSpread = LensSpring(0f)
+    override val springs = listOf(lens, lift, jelly, show, glow, glowSpread)
+    private val glowAtState = mutableStateOf(Offset.Zero)
+    /** 指尖在工具栏内容坐标里的位置。 */
+    val glowAt: Offset get() = glowAtState.value
+    /** 透镜左上角在内容坐标里（布局时写入）。 */
+    var lensTopLeft = Offset.Zero
+    /** 停靠目标：开启的按钮所在格，没有为 null；由工具栏每次组合更新。 */
+    var restIndex: () -> Int? = { null }
+    var count = 0
+    private var pressedIndex: Int? = null
+    private var downIndex = 0
+    private var pressX = 0f
+    private var dragging = false
+    private var dropping = false
+    private var down = false
+    private var settled = true
+
+    private val last: Int get() = max(0, count - 1)
+
+    override fun busy() = down || dropping || !settled
+
+    override fun afterStep() {
+        wobble(lens, jelly, 1f)
+        dropLift()
+        settleRest()
+    }
+
+    private fun dropLift() {
+        if (!dropping || down || lift.value < LIFT_SNAP) return
+        if (abs(lens.target - lens.value) > LIFT_RELEASE) return
+        dropping = false
+        lift.springTo(0f, LensSprings.lift)
+    }
+
+    /** 落定后：有开启的按钮就滑过去停着，没有就淡出。 */
+    private fun settleRest() {
+        if (down || dropping || lift.value > .02f || abs(lens.target - lens.value) > LIFT_RELEASE) return
+        val rest = restIndex()?.takeIf { it in 0..last && count > 0 }
+        if (rest == null) {
+            if (show.target != 0f) show.springTo(0f, LensSprings.fade)
+        } else {
+            if (lens.target != rest.toFloat()) lens.springTo(rest.toFloat(), LensSprings.travel)
+            if (show.target != 1f) show.springTo(1f, LensSprings.fade)
+        }
+        settled = true
+    }
+
+    /** 开启的按钮或格子顺序变了：空闲时重新落位。第一次直接摆好，不做动画。 */
+    fun syncRest(initial: Boolean) {
+        val rest = restIndex()?.takeIf { it in 0..last && count > 0 }
+        if (initial && rest != null) {
+            lens.jumpTo(rest.toFloat())
+            show.jumpTo(1f)
+            return
+        }
+        settled = false
+        wake()
+    }
+
+    private fun positionAt(x: Float, pitch: Float): Float {
+        val position = x / pitch - .5f
+        return when {
+            position < 0f -> rubberBand(position, OVERDRAG)
+            position > last -> last + rubberBand(position - last, OVERDRAG)
+            else -> position
+        }
+    }
+
+    private fun indexAt(position: Float): Int = position.roundToInt().coerceIn(0, last)
+
+    fun press(at: Offset, pitch: Float) {
+        if (count <= 0 || pitch <= 0f) return
+        down = true
+        settled = false
+        val index = indexAt(positionAt(at.x, pitch))
+        pressedIndex = index
+        downIndex = index
+        pressX = at.x
+        dragging = false
+        dropping = false
+        glowAtState.value = at
+        glowSpread.jumpTo(0f)
+        glow.springTo(1f, LensSprings.glowIn)
+        // 透镜原本不在（淡出了）：从按下那格直接长出来，不从远处滑来。
+        if (show.value < .05f) lens.jumpTo(index.toFloat())
+        show.springTo(1f, LensSprings.fade)
+        lift.springTo(1f, LensSprings.lift)
+        lens.springTo(index.toFloat(), LensSprings.travel)
+        wake()
+    }
+
+    /** 拖动：超过触摸阈值后透镜跟手。 */
+    fun slide(at: Offset, pitch: Float, touchSlop: Float) {
+        if (pressedIndex == null || pitch <= 0f) return
+        glowAtState.value = at
+        if (!dragging) {
+            if (abs(at.x - pressX) < touchSlop) return
+            dragging = true
+        }
+        val position = positionAt(at.x, pitch)
+        lens.springTo(position, LensSprings.follow)
+        pressedIndex = indexAt(position)
+        wake()
+    }
+
+    val dragged: Boolean get() = dragging
+
+    /**
+     * 松手：[commit] 时透镜落在拖到的格（甩动最多多走一格），返回该格；否则轻点落在按下那格，
+     * 拖了但不算数（横向滚动、被长按换位接管）就回停靠位。
+     */
+    fun release(commit: Boolean, velocityX: Float, pitch: Float): Int? {
+        val pressed = pressedIndex
+        down = false
+        glow.springTo(0f, LensSprings.glowOut)
+        glowSpread.springTo(1f, LensSprings.glowOut)
+        if (pressed == null) {
+            dropping = true
+            wake()
+            return null
+        }
+        var index = pressed
+        if (commit && dragging && pitch > 0f) {
+            val lead = velocityX / pitch * FLING_PROJECTION_S
+            index = (lens.target + lead).roundToInt().coerceIn(pressed - 1, pressed + 1).coerceIn(0, last)
+        }
+        pressedIndex = null
+        val wasDragging = dragging
+        dragging = false
+        dropping = true
+        val target = when {
+            commit || !wasDragging -> index
+            else -> restIndex()?.takeIf { it in 0..last } ?: downIndex
+        }
+        lens.springTo(target.toFloat(), LensSprings.travel)
+        wake()
+        return if (commit) index else null
+    }
+
+    /** 放弃这次按压（长按换位开始）：透镜放下并淡出。 */
+    fun cancel() {
+        pressedIndex = null
+        dragging = false
+        down = false
+        dropping = false
+        lift.springTo(0f, LensSprings.lift)
+        show.springTo(0f, LensSprings.fade)
+        glow.springTo(0f, LensSprings.glowOut)
+        settled = true
+        wake()
+    }
+
+    /** 透镜在内容坐标里的框（_lensRect）：抬起长大，果冻拉长压扁，竖直居中。 */
+    fun rect(pitch: Float, pillWidth: Float, pillHeight: Float, height: Float): Rect {
+        val growth = LENS_GROWTH_DP * density * 2f * lift.value
+        val j = jelly.value
+        val w = (pillWidth + growth) * (1f + j)
+        val h = ((pillHeight + growth) * (1f - j * JELLY_ASPECT)).coerceAtLeast(1f)
+        val cx = (lens.value + .5f) * pitch
+        return Rect(cx - w / 2f, (height - h) / 2f, cx + w / 2f, (height + h) / 2f)
+    }
+
+    /** 玻璃强度：淡出时到 0；停靠 .6，抬起到 1。 */
+    fun strength(): Float = show.value.coerceIn(0f, 1f) * (LENS_REST_STRENGTH + (1f - LENS_REST_STRENGTH) * lift.value)
+
+    /** 第 [index] 格的图标放大倍数：透镜盖住多少放大多少。 */
+    fun magnify(index: Int): Float {
+        val cover = (1f - abs(lens.value - index)).coerceIn(0f, 1f)
+        return 1f + LENS_MAGNIFY * lift.value * cover * show.value.coerceIn(0f, 1f)
+    }
+
+    fun glowStrength(): Float = GLOW_PEAK * glow.value * glow.value
+
+    fun glowReach(): Float = GLOW_REACH_DP * density * (1f + GLOW_GROWTH * glowSpread.value)
+}
+
+@Composable
+internal fun rememberToolbarLensMotion(): ToolbarLensMotion {
+    val density = LocalDensity.current.density
+    val motion = remember(density) { ToolbarLensMotion(density) }
+    LaunchedEffect(motion) { motion.run() }
+    return motion
+}
+
+/**
+ * 工具栏透镜本体：铺满工具栏内容（随横向滚动一起走），透镜按 [ToolbarLensMotion.rect] 摆放。
+ * Android 13 起画玻璃（折射键盘背景、色散、上下沿高光、外圈暗线、淡白底色、指尖光）；
+ * 以下只画半透明胶囊 + 细亮边，动效相同。
+ */
+@Composable
+internal fun ToolbarGlassLens(
+    motion: ToolbarLensMotion, pitch: Float, pillWidth: Float, pillHeight: Float, modifier: Modifier = Modifier,
+) {
+    val colors = MaterialTheme.colorScheme
+    val palette = LocalMaterialPalette.current ?: MaterialPalette(colors.surface, colors.primary)
+    val dark = palette.surface.luminance() < .5f
+    val origin = remember { mutableStateOf<Offset?>(null) }
+    val placed = Modifier
+        .layout { measurable, constraints ->
+            val r = motion.rect(pitch, pillWidth, pillHeight, constraints.maxHeight.toFloat())
+            val w = r.width.roundToInt().coerceAtLeast(1)
+            val h = r.height.roundToInt().coerceAtLeast(1)
+            val left = r.left.roundToInt()
+            val top = r.top.roundToInt()
+            motion.lensTopLeft = Offset(left.toFloat(), top.toFloat())
+            val placeable = measurable.measure(Constraints.fixed(w, h))
+            layout(constraints.maxWidth, constraints.maxHeight) { placeable.place(left, top) }
+        }
+        .onGloballyPositioned { origin.value = it.positionInRoot() }
+    val surface = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        val root = LocalView.current.rootView
+        val shared = LocalSharedKeyboardBackdrop.current?.takeIf { it.windowRoot === root }
+        val drawFrame: androidx.compose.ui.graphics.drawscope.DrawScope.() -> Unit =
+            remember(shared) { { drawSharedBackdropForKey(shared, origin.value) } }
+        val backdrop = rememberCanvasBackdrop(drawFrame)
+        val edge = if (shared?.image != null) 1f else 0f
+        // 淡白底色（lens 原版是透明的，工具栏上一片纯色时靠它和暗线认出透镜）。
+        val tint = Color.White.copy(alpha = if (dark) .07f else .24f)
+        Modifier.drawBackdrop(
+            backdrop = backdrop,
+            shape = { CircleShape },
+            effects = {
+                val t = motion.strength()
+                val local = motion.glowAt - motion.lensTopLeft
+                glassLens(size.height / 2f, dark, t, edge * min(t, 1f), local, motion.glowStrength() * min(t * 2f, 1f),
+                    motion.glowReach(), tint.copy(alpha = tint.alpha * min(t / LENS_REST_STRENGTH, 1f)))
+            },
+            highlight = null,
+            shadow = null,
+        )
+    } else {
+        val fill = Color.White.copy(alpha = if (dark) .16f else .42f)
+        val line = Color.Black.copy(alpha = if (dark) .25f else .12f)
+        Modifier.drawBehind {
+            val t = motion.strength()
+            if (t <= .001f) return@drawBehind
+            val corner = CornerRadius(size.height / 2f)
+            drawRoundRect(fill, cornerRadius = corner, alpha = min(t, 1f))
+            drawRoundRect(line, cornerRadius = corner, alpha = min(t, 1f), style = Stroke(.67f * density))
+        }
+    }
+    androidx.compose.foundation.layout.Box(modifier) {
+        androidx.compose.foundation.layout.Box(placed.then(surface))
+    }
+}
+
+// ---------------------------------------------------------------- 着色器
+
+/**
+ * LiquidGlassStyle.lens 按 [strength] 缩放（prism_ui 的 scale(t)）：凸透镜往外读 4.3dp、斜面 5.5dp、色散 6.5dp、
+ * 上下沿高光、外圈 0.67dp 暗线、两端略暗。
+ * 和原版不同的地方（用户 11-09「真机上看不出变化」）：
+ * - 只在边缘斜面那一圈画折射后的底片，中间透明，露出下面的键帽底色（[edge] 是这一圈的不透明度）；
+ * - 浅色主题上白高光看不出，高光加宽加亮、暗线加深，斜面再加一点上亮下暗的厚度；
+ * - [tint] 是预乘前的底色，铺在整片透镜下层。
+ */
+internal fun BackdropEffectScope.glassLens(
+    radiusPx: Float, dark: Boolean, strength: Float, edge: Float,
+    glowAt: Offset, glow: Float, glowReachPx: Float, tint: Color = Color.Transparent,
+) {
+    val t = strength.coerceIn(0f, 1.6f)
+    val a = tint.alpha
+    runtimeShaderEffect("CyImeGlassLens", GLASS_LENS_SHADER, "content") {
         setFloatUniform("size", size.width, size.height)
         setFloatUniform("offset", -padding, -padding)
         setFloatUniform("radius", radiusPx)
         setFloatUniform("dp", density)
-        // 深度、斜面宽、色散（dp）
-        setFloatUniform("optics", 4.3f, 5.5f, 6.5f)
+        // 深度、斜面宽（dp）、色散（dp）、斜面圈不透明度
+        setFloatUniform("optics", 4.3f * t, 5.5f, 6.5f * t, edge.coerceIn(0f, 1f))
         // 饱和度、亮度、两端变暗
-        setFloatUniform("tone", 1f, if (dark) 1.33f else 1f, .045f)
-        // 高光强度、高光宽（dp）、暗线强度
-        setFloatUniform("rim", if (dark) .3f else .6f, 1.1f, .42f)
-        setFloatUniform("glow", press.glowAt.x, press.glowAt.y,
-            GLOW_PEAK * glow, GLOW_REACH_DP * density * (1f + GLOW_GROWTH * spread))
+        setFloatUniform("tone", 1f, 1f + ((if (dark) 1.33f else 1f) - 1f) * t, .045f * t)
+        // 高光强度、高光宽（dp）、暗线强度、斜面厚度
+        setFloatUniform("rim", (if (dark) .5f else .9f) * t, 1.5f, (if (dark) .45f else .55f) * t,
+            (if (dark) .08f else .12f) * t)
+        setFloatUniform("tint", tint.red * a, tint.green * a, tint.blue * a, a)
+        setFloatUniform("glow", glowAt.x, glowAt.y, glow, glowReachPx)
         setFloatUniform("wash", GLOW_WASH)
     }
 }
 
-private const val IOS_GLASS_SHADER = """
+private const val GLASS_LENS_SHADER = """
 uniform shader content;
 uniform float2 size;
 uniform float2 offset;
 uniform float radius;
 uniform float dp;
-uniform float3 optics;
+uniform float4 optics;
 uniform float3 tone;
-uniform float3 rim;
+uniform float4 rim;
+uniform float4 tint;
 uniform float4 glow;
 uniform float wash;
 
@@ -180,60 +659,77 @@ half4 main(float2 coord) {
     float2 n = (q.x > 0.0 && q.y > 0.0) ? normalize(q) : ((q.x > q.y) ? float2(1.0, 0.0) : float2(0.0, 1.0));
     n *= float2(c.x < 0.0 ? -1.0 : 1.0, c.y < 0.0 ? -1.0 : 1.0);
 
-    // 凸透镜：边上不偏，斜面内侧偏到最深，往中间渐平；往外读，把边缘下面的画面拉进来。
     float bevel = max(min(optics.y * dp, halfMinor * 0.5), 0.001);
-    float depth = min(optics.x * dp, halfMinor);
-    float2 shift = n * depth * smoothstep(0.0, bevel, inset) * (1.0 - smoothstep(bevel, halfMinor, inset));
-    float2 at = coord + shift;
-    half4 base = content.eval(at);
+    float3 glass = float3(tint.rgb);
+    float cover = tint.a;
 
-    // 色散：沿法线的镜像方向把红蓝分开，离边 7dp 起收、10dp 合拢。
-    float partReach = 10.0 * dp;
-    float partHold = 7.0 * dp;
-    if (optics.z > 0.0 && inset < partReach) {
-        float2 part = n.yx * 0.5 * optics.z * dp
-            * (0.6 + 0.4 * abs(n.y) * max(1.0 - inset / partHold, 0.0))
-            * (1.0 - smoothstep(partHold, partReach, inset));
-        half4 red = content.eval(at + part);
-        half4 blue = content.eval(at - part);
-        base = half4(red.r, base.g, blue.b, max(base.a, max(red.a, blue.a)));
+    // 斜面一圈：凸透镜往外读，边上不偏、斜面内侧偏到最深、往中间渐平；中间透明。
+    float band = (1.0 - smoothstep(bevel * 0.7, bevel * 1.6, inset)) * optics.w;
+    if (band > 0.0) {
+        float depth = min(optics.x * dp, halfMinor);
+        float2 shift = n * depth * smoothstep(0.0, bevel, inset) * (1.0 - smoothstep(bevel, halfMinor, inset));
+        float2 at = coord + shift;
+        half4 base = content.eval(at);
+        // 色散：沿法线的镜像方向把红蓝分开，离边 7dp 起收、10dp 合拢。
+        float partReach = 10.0 * dp;
+        float partHold = 7.0 * dp;
+        if (optics.z > 0.0 && inset < partReach) {
+            float2 part = n.yx * 0.5 * optics.z * dp
+                * (0.6 + 0.4 * abs(n.y) * max(1.0 - inset / partHold, 0.0))
+                * (1.0 - smoothstep(partHold, partReach, inset));
+            half4 red = content.eval(at + part);
+            half4 blue = content.eval(at - part);
+            base = half4(red.r, base.g, blue.b, max(base.a, max(red.a, blue.a)));
+        }
+        float alpha = float(base.a);
+        float3 color = float3(base.rgb) / max(alpha, 0.0001);
+        color = mix(float3(dot(color, kLuma)), color, tone.x) * tone.y;
+        color *= 1.0 - tone.z * abs(n.x) * exp(-inset / (3.0 * dp));
+        float a = clamp(alpha * band, 0.0, 1.0);
+        glass = glass * (1.0 - a) + color * a;
+        cover = cover * (1.0 - a) + a;
     }
 
-    float alpha = base.a;
-    float3 color = float3(base.rgb) / max(alpha, 0.0001);
-    color = mix(float3(dot(color, kLuma)), color, tone.x) * tone.y;
-    color *= 1.0 - tone.z * abs(n.x) * exp(-inset / (3.0 * dp));
-    float3 glass = color * alpha;
-    float cover = alpha;
+    // 厚度：斜面里上沿略亮、下沿略暗。
+    float shade = rim.w * (1.0 - smoothstep(0.0, bevel, inset));
+    float lit = clamp(shade * max(-n.y, 0.0), 0.0, 1.0);
+    float dim = clamp(shade * max(n.y, 0.0) * 0.6, 0.0, 1.0);
+    glass = glass * (1.0 - lit) + float3(lit);
+    cover = cover * (1.0 - lit) + lit;
+    glass = glass * (1.0 - dim);
+    cover = cover * (1.0 - dim) + dim;
 
-    // 暗线：最外 0.67dp，压暗下面的画面；底片是空的（纯色主题）就画一道很淡的黑边。
+    // 暗线：最外 0.67dp，把下面的颜色压暗；底片是空的就画一道淡黑边。
     float kLine = 0.67 * dp;
     float line = clamp((kLine - inset) / 1.0 + 0.5, 0.0, 1.0);
     if (rim.z > 0.0 && line > 0.0) {
-        float3 darker = max(glass - 0.298 * cover, 0.22 * glass);
-        glass = mix(glass, darker, rim.z * line);
-        float faint = 0.10 * rim.z * line * (1.0 - cover);
-        glass = glass * (1.0 - faint);
-        cover = cover + (1.0 - cover) * faint;
+        half4 here = content.eval(coord);
+        float ha = float(here.a);
+        float3 under = ha > 0.001 ? float3(here.rgb) / ha : float3(0.0);
+        float3 darker = max(under - 0.298, 0.22 * under);
+        float la = clamp(rim.z * line * (ha > 0.001 ? 1.0 : 0.5), 0.0, 1.0);
+        glass = glass * (1.0 - la) + darker * la;
+        cover = cover * (1.0 - la) + la;
     }
 
-    // 高光：只在上下沿（法线朝上下时），紧贴暗线内侧，宽 rim.y dp，像白光叠上去。
+    // 高光：只在上下沿（法线朝上下时），紧贴暗线内侧，像白光叠上去。
     float within = max(inset - kLine, 0.0);
-    float facing = smoothstep(0.65, 0.95, abs(n.y));
-    float band = clamp(1.0 - within / max(rim.y * dp, 0.001), 0.0, 1.0);
-    float shine = min(rim.x * facing * band, 1.0);
+    float facing = smoothstep(0.55, 0.95, abs(n.y));
+    float sheen = clamp(1.0 - within / max(rim.y * dp, 0.001), 0.0, 1.0);
+    float shine = min(rim.x * facing * sheen, 1.0);
     glass = glass * (1.0 - shine) + float3(shine);
     cover = cover * (1.0 - shine) + shine;
 
-    // 指尖光：手指下面亮一团，松手时摊开淡出；一部分均匀洒满整个键。
+    // 指尖光：手指下面亮一团，松手时摊开淡出；一部分均匀洒满。
     if (glow.z > 0.0) {
         float2 toGlow = p - glow.xy;
         float reach = max(glow.w * glow.w, 1.0);
-        float light = glow.z * mix(exp(-dot(toGlow, toGlow) / reach), 1.0, wash);
+        float light = clamp(glow.z * mix(exp(-dot(toGlow, toGlow) / reach), 1.0, wash), 0.0, 1.0);
         glass = glass * (1.0 - light) + float3(light);
         cover = cover * (1.0 - light) + light;
     }
 
+    cover = clamp(cover, 0.0, 1.0);
     return half4(half3(min(glass, float3(cover))), half(cover)) * half(inside);
 }
 """

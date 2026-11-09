@@ -791,7 +791,9 @@ internal fun ToolbarActionButton(
         animationSpec = tween(if (pressed) 0 else 300), label = "toolbar-press")
     // The disc appears only while pressed or on (no resting disc, glass or not). Under glass
     // the active tool is filled solidly with an inverted glyph; voice keeps its pulsing glow.
-    val glassActiveFill = visuals.glassControlBackground?.takeIf { action.active && !voiceActive }?.let { fill ->
+    // 工具栏玻璃透镜开着时，按下和开启由透镜表示：不画按下底色、不画实心开启底色和细亮边。
+    val lensOn = LocalToolbarLens.current
+    val glassActiveFill = visuals.glassControlBackground?.takeIf { action.active && !voiceActive && !lensOn }?.let { fill ->
         val surface = fill.copy(alpha = 1f)
         if (textContrast(visuals.accentColor, surface) >= 3f) visuals.accentColor.copy(alpha = 1f) else tint.copy(alpha = 1f)
     }
@@ -803,7 +805,7 @@ internal fun ToolbarActionButton(
     // 大屏参照 Gboard：整格都可点，按下/开启的底色是随格宽向两边拉长的胶囊；窄格仍是圆形。
     val listening = voiceActive && voiceState == RecognitionState.LISTENING
     // 液态玻璃：胶囊露出来时（开启常亮，按下随底色淡出）加按键同款细亮边；听写音量光圈不加。
-    val liquidEdge = com.kingzcheung.xime.ui.theme.LiquidGlass.surfacesOn() && !listening
+    val liquidEdge = com.kingzcheung.xime.ui.theme.LiquidGlass.surfacesOn() && !listening && !lensOn
     BoxWithConstraints(
         modifier.widthIn(min = 36.dp).height(40.dp)
             // 音量光圈画在不裁切的外层：始终正圆、比图标大，宽格也不会被拉成胶囊。
@@ -818,7 +820,9 @@ internal fun ToolbarActionButton(
     Box(
         Modifier.size(if (listening) androidx.compose.ui.unit.DpSize(36.dp, 36.dp) else toolbarPillSize(maxWidth))
             .clip(CircleShape)
-            .background(if (listening) Color.Transparent else glassActiveFill ?: visuals.glassControlBackground?.let { fill ->
+            .background(if (listening) Color.Transparent
+                else if (lensOn) (if (action.active) visuals.accentColor.copy(alpha = 0.20f) else Color.Transparent)
+                else glassActiveFill ?: visuals.glassControlBackground?.let { fill ->
                 if (action.active) androidx.compose.ui.graphics.lerp(fill, visuals.accentColor, 0.18f).copy(alpha = fill.alpha)
                 else fill.copy(alpha = fill.alpha * pressAlpha)
             } ?: if (action.active) visuals.accentColor.copy(alpha = 0.28f)

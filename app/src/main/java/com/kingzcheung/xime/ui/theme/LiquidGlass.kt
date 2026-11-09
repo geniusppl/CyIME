@@ -123,19 +123,15 @@ internal fun Modifier.liquidGlassCap(cap: Modifier, radius: Dp): Modifier = comp
     }
     val rich = LiquidGlass.rich(androidx.compose.ui.platform.LocalContext.current)
     if (!rich) return@composed observed.then(liquidRefraction(radius)).then(cap).then(liquidRim(radius, dark, held))
-    // Android 12 及以下没有运行时着色器，透镜做不了，退回手画的高光 + 简单鼓起。
+    // Android 12 及以下没有运行时着色器，透镜做不了，退回手画的高光；按压手感和透镜同一套（抬起、鼓起、果冻、回弹）。
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
-        val bulge by androidx.compose.animation.core.animateFloatAsState(
-            targetValue = if (held.value) 1.12f else 1f,
-            animationSpec = androidx.compose.animation.core.spring(dampingRatio = .593f, stiffness = 311f),
-            label = "liquidBulge")
-        return@composed observed.then(Modifier.graphicsLayer { scaleX = bulge; scaleY = bulge })
-            .then(cap).then(liquidRichRim(radius, dark, held))
+        val press = rememberGlassKeyPress()
+        return@composed observed.then(press.modifier).then(cap).then(liquidRichRim(radius, dark, held))
     }
     // iOS 样式（11-09）：底片和绘制用 Kyant0/AndroidLiquidGlass（Apache-2.0），玻璃着色器和按压手感
-    // 照 FlClash / prism_ui（GPL-3.0，chen08209）按 iOS 实测调的参数移植，见 [IosGlassShader] 和 [ElasticKeyPress]。
-    // 输入法读不到背后应用的画面，只能弯键盘自己的背景图；纯色主题只剩高光、暗边和指尖光。
-    val press = rememberElasticKeyPress()
+    // 照 FlClash / prism_ui（GPL-3.0，chen08209）的浮动导航栏透镜移植，与工具栏透镜共用，见 [glassLens] 和 [GlassKeyPress]。
+    // 输入法读不到背后应用的画面，只能弯键盘自己的背景图；纯色主题底片铺主题底色，只剩高光、暗线、厚度和指尖光。
+    val press = rememberGlassKeyPress()
     val root = LocalView.current.rootView
     val shared = LocalSharedKeyboardBackdrop.current?.takeIf { it.windowRoot === root }
     val origin = remember { mutableStateOf<Offset?>(null) }
@@ -143,21 +139,28 @@ internal fun Modifier.liquidGlassCap(cap: Modifier, radius: Dp): Modifier = comp
         remember(shared) { { drawSharedBackdropForKey(shared, origin.value) } }
     val backdrop = rememberCanvasBackdrop(drawFrame)
     val shape = androidx.compose.foundation.shape.RoundedCornerShape(radius)
+    // 有背景图时斜面一圈画折射后的图；纯色时这一圈不画（画了像键缩了一圈），中间都透明露出键帽底色。
+    val edge = if (shared?.image != null) 1f else 0f
     // 位置在变形之前量，按下放大、拖动时底片不跟着跑。
+    // 11-09 修：玻璃原来画在 cap 之前，被键帽底色整个盖住，真机上看不出变化；现在 cap（裁剪 + 底色）先画，
+    // 玻璃叠在底色上面、文字下面；press.modifier 的缩放仍包住两者。
     observed.onGloballyPositioned { origin.value = it.positionInRoot() }
         .then(press.modifier)
+        .then(cap)
         .drawBackdrop(
             backdrop = backdrop,
             shape = { shape },
-            effects = { iosGlass(radius.toPx(), dark, press) },
+            effects = {
+                glassLens(radius.toPx(), dark, press.strength(), edge, press.glowAt,
+                    press.glowStrength(), press.glowReach())
+            },
             highlight = null,
             shadow = null,
         )
-        .then(cap)
 }
 
-/** 在按键自己的坐标里画共用键盘背景（和 [liquidRefraction33] 同一套对位），没有背景图时不画。 */
-private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawSharedBackdropForKey(
+/** 在按键自己的坐标里画共用键盘背景（和 [liquidRefraction33] 同一套对位）；没有背景图时铺主题底色。 */
+internal fun androidx.compose.ui.graphics.drawscope.DrawScope.drawSharedBackdropForKey(
     shared: SharedKeyboardBackdrop?, at: Offset?,
 ) {
     shared ?: return
@@ -166,8 +169,11 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawSharedBackdropF
     val image = shared.image
     val width = frame.size.width.toFloat()
     val height = frame.size.height.toFloat()
-    // 纯色主题没有图可弯，什么都不画：键面照旧，只剩库的高光。
-    if (image == null || width <= 0f || height <= 0f || image.width <= 0 || image.height <= 0) return
+    // 纯色/渐变主题没有图可弯：铺底色，暗线、高光和指尖光才有东西可压暗、可叠。
+    if (image == null || width <= 0f || height <= 0f || image.width <= 0 || image.height <= 0) {
+        if (shared.fallback.alpha > 0f) drawRect(shared.fallback)
+        return
+    }
     val offset = frame.origin + shared.windowToRoot - at
     val motion = shared.motion?.transform ?: BackgroundMotionTransform.Identity
     val left = offset.x + width * ((1f - motion.scale) / 2f + motion.shiftX)
