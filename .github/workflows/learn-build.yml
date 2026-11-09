@@ -75,7 +75,14 @@ jobs:
       - name: Build release APK
         run: |
           # GitHub 下载偶尔 503/504，失败自动重试两次
-          for i in 1 2 3; do ./gradlew assembleRelease --no-daemon && exit 0; echo "retry $i"; sleep 30; done; exit 1
+          for i in 1 2 3 4; do
+            ./gradlew assembleRelease --no-daemon && exit 0
+            echo "retry $i"
+            # 下载失败会留下空的 Boost 压缩包，删掉再试
+            find . -name 'boost-*.tar.xz' -size -1M -print -delete || true
+            rm -rf app/.cxx
+            sleep 45
+          done; exit 1
 
       - name: List outputs
         if: always()

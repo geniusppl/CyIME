@@ -15,12 +15,14 @@ if(NOT EXISTS "boost-${BOOST_VERSION}.tar.xz" AND NOT EXISTS "${CMAKE_SOURCE_DIR
   list(GET _dl_status 1 _dl_msg)
 
   if(NOT _dl_code EQUAL 0)
+    file(REMOVE boost-${BOOST_VERSION}.tar.xz)
     message(STATUS "GitHub download failed (${_dl_msg}), trying ghproxy mirror ...")
     file(DOWNLOAD "https://ghproxy.net/${BOOST_URL}" boost-${BOOST_VERSION}.tar.xz
          EXPECTED_HASH SHA256=${BOOST_SHA256} SHOW_PROGRESS STATUS _dl_status2)
     list(GET _dl_status2 0 _dl_code2)
 
     if(NOT _dl_code2 EQUAL 0)
+      file(REMOVE boost-${BOOST_VERSION}.tar.xz)
       message(STATUS "ghproxy also failed, trying local Boost source ...")
       file(REMOVE_RECURSE "${CMAKE_SOURCE_DIR}/boost")
       if(EXISTS "/tmp/boost_${BOOST_VERSION}")
