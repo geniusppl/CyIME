@@ -61,7 +61,7 @@ dependencies {
     // manifest.yaml 解析（Lua 模式插件元数据），与 app 统一使用 kaml 类型化解析，
     // 避免引入 org.yaml:snakeyaml（其 java.beans 反射在 Android 上不可用）
     implementation(libs.kaml)
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-core:1.11.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-core:1.12.0")
     // Use the same URL parser as the host network transport.
     implementation("com.squareup.okhttp3:okhttp:5.4.0")
     
