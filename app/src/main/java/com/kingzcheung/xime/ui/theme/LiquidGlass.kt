@@ -40,10 +40,6 @@ import androidx.compose.ui.unit.Dp
 import com.kingzcheung.xime.settings.SettingsPreferences
 import com.kyant.backdrop.backdrops.rememberCanvasBackdrop
 import com.kyant.backdrop.drawBackdrop
-import com.kyant.backdrop.effects.blur
-import com.kyant.backdrop.effects.lens
-import com.kyant.backdrop.effects.vibrancy
-import com.kyant.backdrop.highlight.Highlight
 
 /**
  * 液态玻璃（主题与外观 › 材质效果，默认关；打开时把玻璃一起打开）。
@@ -127,18 +123,19 @@ internal fun Modifier.liquidGlassCap(cap: Modifier, radius: Dp): Modifier = comp
     }
     val rich = LiquidGlass.rich(androidx.compose.ui.platform.LocalContext.current)
     if (!rich) return@composed observed.then(liquidRefraction(radius)).then(cap).then(liquidRim(radius, dark, held))
-    // 浓郁样式：按下像水珠一样鼓起，松手带一点回弹（弹簧动画，只动这一个键的图层，不重排布局）。
-    val bulge by androidx.compose.animation.core.animateFloatAsState(
-        targetValue = if (held.value) 1.12f else 1f,
-        animationSpec = androidx.compose.animation.core.spring(
-            dampingRatio = if (held.value) .6f else .45f, stiffness = if (held.value) 700f else 380f),
-        label = "liquidBulge")
-    val bulgeLayer = Modifier.graphicsLayer { scaleX = bulge; scaleY = bulge }
-    val pressed = observed.then(bulgeLayer)
-    // Android 12 及以下没有运行时着色器，透镜做不了，退回手画的高光。
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return@composed pressed.then(cap).then(liquidRichRim(radius, dark, held))
-    // iOS 样式（11-09 用户要求接入 Kyant0/AndroidLiquidGlass）：键盘背景当底片，每个键用库里的透镜
-    // 把底片在边缘弯折、带一点色散，再加库的方向高光。输入法读不到背后应用的画面，只能弯键盘自己的背景。
+    // Android 12 及以下没有运行时着色器，透镜做不了，退回手画的高光 + 简单鼓起。
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+        val bulge by androidx.compose.animation.core.animateFloatAsState(
+            targetValue = if (held.value) 1.12f else 1f,
+            animationSpec = androidx.compose.animation.core.spring(dampingRatio = .593f, stiffness = 311f),
+            label = "liquidBulge")
+        return@composed observed.then(Modifier.graphicsLayer { scaleX = bulge; scaleY = bulge })
+            .then(cap).then(liquidRichRim(radius, dark, held))
+    }
+    // iOS 样式（11-09）：底片和绘制用 Kyant0/AndroidLiquidGlass（Apache-2.0），玻璃着色器和按压手感
+    // 照 FlClash / prism_ui（GPL-3.0，chen08209）按 iOS 实测调的参数移植，见 [IosGlassShader] 和 [ElasticKeyPress]。
+    // 输入法读不到背后应用的画面，只能弯键盘自己的背景图；纯色主题只剩高光、暗边和指尖光。
+    val press = rememberElasticKeyPress()
     val root = LocalView.current.rootView
     val shared = LocalSharedKeyboardBackdrop.current?.takeIf { it.windowRoot === root }
     val origin = remember { mutableStateOf<Offset?>(null) }
@@ -146,22 +143,15 @@ internal fun Modifier.liquidGlassCap(cap: Modifier, radius: Dp): Modifier = comp
         remember(shared) { { drawSharedBackdropForKey(shared, origin.value) } }
     val backdrop = rememberCanvasBackdrop(drawFrame)
     val shape = androidx.compose.foundation.shape.RoundedCornerShape(radius)
-    // 位置在鼓起之前量，按下放大时底片不跟着跑。
-    observed.onGloballyPositioned { origin.value = it.positionInRoot() }.then(bulgeLayer)
+    // 位置在变形之前量，按下放大、拖动时底片不跟着跑。
+    observed.onGloballyPositioned { origin.value = it.positionInRoot() }
+        .then(press.modifier)
         .drawBackdrop(
             backdrop = backdrop,
             shape = { shape },
-            effects = {
-                vibrancy()
-                blur(1.5f * density)
-                lens(
-                    (size.minDimension * .22f).coerceAtMost(14f * density),
-                    (size.minDimension * .45f).coerceAtMost(28f * density),
-                    chromaticAberration = true)
-            },
-            highlight = { Highlight.Default.copy(alpha = if (dark) .55f else .9f) },
+            effects = { iosGlass(radius.toPx(), dark, press) },
+            highlight = null,
             shadow = null,
-            onDrawSurface = { if (held.value) drawRect(Color.White.copy(alpha = if (dark) .08f else .14f)) },
         )
         .then(cap)
 }
