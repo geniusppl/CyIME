@@ -37,6 +37,7 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
 import com.kingzcheung.xime.settings.SettingsPreferences
 import com.kingzcheung.xime.ui.keyboard.glassTextHalo
 
@@ -135,17 +136,27 @@ internal fun Modifier.liquidGlassCap(cap: Modifier, radius: Dp): Modifier = comp
     val seeThrough = com.kingzcheung.xime.ui.keyboard.LocalKeyboardInputPreferences.current.frostedGlass.seeThrough
     val labelHalo = if (seeThrough) com.kingzcheung.xime.ui.keyboard.GlassTextHalo(
         if (dark) Color.Black else Color.White, if (dark) IOS_SEE_THROUGH_HALO_DARK else IOS_SEE_THROUGH_HALO_LIGHT) else null
-    // 位置在变形之前量，按下放大、拖动时底片不跟着跑；press.modifier 的缩放包住键帽和玻璃。
+    // 11-09 第四版：键帽质感换成 KunBox（roseforljh/KunBox，MIT）的晶体表面——左上焦散、右下深度、迎光浮雕边、
+    // 外亮边，外加只画在键外的软阴影（[kunBoxHollowShadow]）；透镜只留折射（有底片时）和指尖光，按压弹簧不变。
+    val surfaceColor = palette.surface
+    // 位置在变形之前量，按下放大、拖动时底片不跟着跑；press.modifier 的缩放包住阴影、键帽和玻璃。
     observed.onGloballyPositioned { origin.value = it.positionInRoot() }
         .then(press.modifier)
+        .kunBoxHollowShadow(radius, color = Color.Black, alpha = if (dark) .24f else .10f,
+            blurRadius = 3.5.dp, offsetY = 1.5.dp)
         .then(cap)
         .drawWithCache {
             val lens = LensPaintCache()
             val radiusPx = radius.toPx()
+            val crystal = kunBoxCrystal(radiusPx, dark, KunBoxGlassRole.KEY, surfaceColor)
             onDrawWithContent {
-                drawGlassLens(source, origin.value, radiusPx, dark, press.strength(), 1f,
-                    press.glowAt, press.glowStrength(), press.glowReach(), Color.Transparent, lens, refract = !seeThrough)
+                val strength = press.strength()
+                drawKunBoxCrystalUnder(crystal, boost = (strength - 1f) * 1.6f)
+                drawGlassLens(source, origin.value, radiusPx, dark, strength, 1f,
+                    press.glowAt, press.glowStrength(), press.glowReach(), Color.Transparent, lens,
+                    refract = !seeThrough, rims = 0f)
                 drawContent()
+                drawKunBoxCrystalOver(crystal)
             }
         }
         .then(if (labelHalo != null) Modifier.glassTextHalo(labelHalo) else Modifier)
@@ -344,6 +355,19 @@ internal fun Modifier.liquidGlassEdge(radius: Dp, alpha: () -> Float = { 1f }): 
     val colors = MaterialTheme.colorScheme
     val palette = LocalMaterialPalette.current ?: MaterialPalette(colors.surface, colors.primary)
     val dark = palette.surface.luminance() < .5f
+    // iOS 液态玻璃：候选栏胶囊、剪贴板卡片等面板件换成 KunBox 导航胶囊同款晶体表面（移植自 roseforljh/KunBox（MIT））。
+    if (LiquidGlass.rich(androidx.compose.ui.platform.LocalContext.current)) {
+        val surfaceColor = palette.surface
+        return@composed drawWithCache {
+            val crystal = kunBoxCrystal(radius.toPx(), dark, KunBoxGlassRole.PANEL, surfaceColor)
+            onDrawWithContent {
+                val shown = alpha().coerceIn(0f, 1f)
+                drawKunBoxCrystalUnder(crystal, alpha = shown)
+                drawContent()
+                drawKunBoxCrystalOver(crystal, alpha = shown)
+            }
+        }
+    }
     drawWithCache {
         val rim = liquidRimGeometry(radius, dark)
         onDrawWithContent {

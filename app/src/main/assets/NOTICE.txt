@@ -126,3 +126,17 @@ Qingjian (https://github.com/qingjian-team/qingjian, GPL-3.0-or-later), assets/l
 Sources: The CEFR-J Wordlist Version 1.5, compiled by Yukio Tono, Tokyo University of Foreign Studies,
 retrieved from http://www.cefr-j.org/download.html (A1-B2);
 Octanove Vocabulary Profile C1/C2 1.0, CC BY-SA 4.0, https://github.com/openlanguageprofiles/olp-en-cefrj
+
+================================================================================
+KunBox (liquid glass texture)
+================================================================================
+
+Source: https://github.com/roseforljh/KunBox
+License: MIT License, Copyright (c) 2024 SingBox for Android Contributors
+Full license text: licenses/KunBox-MIT.txt.
+
+The iOS liquid glass key caps, toolbar slider and candidate-bar/clipboard glass surfaces
+port KunBox's liquidGlassCrystalSurface, liquidGlassPanelBrush and hollowShadow
+(ui/theme/LiquidGlassTheme.kt) and its LiquidGlassSelectedIndicator styling
+(ui/components/AppNavBar.kt), with tint values adapted for the see-through keyboard
+(app/src/main/java/com/kingzcheung/xime/ui/theme/KunBoxGlass.kt).

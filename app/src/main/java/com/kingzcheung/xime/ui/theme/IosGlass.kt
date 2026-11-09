@@ -563,20 +563,25 @@ internal fun ToolbarGlassLens(
         .onGloballyPositioned { origin.value = it.positionInRoot() }
     // 11-09 第二版：不再走 Kyant drawBackdrop（真机上看不到滑块），和按键同一个直接画的透镜（[drawGlassLens]）。
     val source = rememberLensBackdropSource(dark, (LocalKeyboardPalette.current?.surface ?: palette.surface))
-    // 淡白底色：工具栏上一片浅色时靠它、暗线和上下沿高光认出滑块。
-    val tint = Color.White.copy(alpha = if (dark) .10f else .34f)
     // 透出模式：后面是系统模糊的应用，不取样主题底片（否则滑块边上一圈不透明的渐变）。
     val refract = !com.kingzcheung.xime.ui.keyboard.LocalKeyboardInputPreferences.current.frostedGlass.seeThrough
+    // 11-09 第四版：滑块换成 KunBox 导航栏选中指示器（LiquidGlassSelectedIndicator：selected、非强调）的晶体表面，
+    // 移植自 roseforljh/KunBox（MIT）；透镜只留折射（有底片时）和指尖光，滑动、抬起、果冻动效不变。
+    val surfaceColor = palette.surface
     val surface = Modifier.drawWithCache {
         val cache = LensPaintCache()
+        val crystal = kunBoxCrystal(size.height / 2f, dark, KunBoxGlassRole.SELECTED, surfaceColor)
         onDrawBehind {
             val t = motion.strength()
             if (t <= .001f) return@onDrawBehind
             // 停靠时 .6、抬起到 1；透镜本身按 1 起算，抬起再加强到 1.35（和按键一样）。
             val shown = min(t / LENS_REST_STRENGTH, 1f)
             val optics = 1f + .35f * motion.lift.value
+            drawKunBoxCrystalUnder(crystal, alpha = shown, boost = (optics - 1f) * 1.6f)
             drawGlassLens(source, origin.value, size.height / 2f, dark, optics, shown,
-                motion.glowAt - motion.lensTopLeft, motion.glowStrength() * min(t * 2f, 1f), motion.glowReach(), tint, cache, refract = refract)
+                motion.glowAt - motion.lensTopLeft, motion.glowStrength() * min(t * 2f, 1f), motion.glowReach(),
+                Color.Transparent, cache, refract = refract, rims = 0f)
+            drawKunBoxCrystalOver(crystal, alpha = shown)
         }
     }
     androidx.compose.foundation.layout.Box(modifier) {

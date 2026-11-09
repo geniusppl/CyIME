@@ -162,23 +162,28 @@ internal fun DrawScope.drawGlassLens(
      * 取样主题底片会在键里画出一圈不透明的「内框」，只留厚度、暗线、高光和指尖光。
      */
     refract: Boolean = true,
+    /**
+     * 透镜自己的厚度、暗线和上下沿高光的强度（0~1）。KunBox 晶体表面（[drawKunBoxCrystalUnder]）接管边缘时传 0，
+     * 只留折射和指尖光。
+     */
+    rims: Float = 1f,
 ) {
     if (alpha <= .001f || size.width < 1f || size.height < 1f) return
     val (input, sampled) = cache.input(source, at)
     val patterned = sampled && refract
     val drawn = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-        drawLensShader(input, radiusPx, dark, strength, if (patterned) 1f else 0f, alpha, glowAt, glow, glowReachPx, tint, cache)
-    if (!drawn) drawGlassLensWithoutShader(input, patterned, radiusPx, dark, strength, alpha, tint, cache)
+        drawLensShader(input, radiusPx, dark, strength, if (patterned) 1f else 0f, alpha, glowAt, glow, glowReachPx, tint, cache, rims)
+    if (!drawn) drawGlassLensWithoutShader(input, patterned, radiusPx, dark, strength, alpha, tint, cache, rims)
 }
 
 /** 着色器编译失败时返回 false，由调用方退回手画。 */
 @RequiresApi(Build.VERSION_CODES.TIRAMISU)
 private fun DrawScope.drawLensShader(
     input: Shader, radiusPx: Float, dark: Boolean, strength: Float, edge: Float, alpha: Float,
-    glowAt: Offset, glow: Float, glowReachPx: Float, tint: Color, cache: LensPaintCache,
+    glowAt: Offset, glow: Float, glowReachPx: Float, tint: Color, cache: LensPaintCache, rims: Float,
 ): Boolean {
     val shader = GlassLensPaintShader.shared ?: return false
-    bindLens(shader, input, radiusPx, dark, strength, edge, alpha, glowAt, glow, glowReachPx, tint)
+    bindLens(shader, input, radiusPx, dark, strength, edge, alpha, glowAt, glow, glowReachPx, tint, rims)
     val paint = cache.paint
     paint.shader = shader
     drawIntoCanvas { it.nativeCanvas.drawRect(0f, 0f, size.width, size.height, paint) }
@@ -189,8 +194,9 @@ private fun DrawScope.drawLensShader(
 @RequiresApi(Build.VERSION_CODES.TIRAMISU)
 private fun DrawScope.bindLens(
     shader: RuntimeShader, input: Shader, radiusPx: Float, dark: Boolean, strength: Float, edge: Float, alpha: Float,
-    glowAt: Offset, glow: Float, glowReachPx: Float, tint: Color,
+    glowAt: Offset, glow: Float, glowReachPx: Float, tint: Color, rims: Float,
 ) {
+    shader.setFloatUniform("rims", rims.coerceIn(0f, 1f))
     shader.setInputShader("image", input)
     shader.setFloatUniform("size", size.width, size.height)
     shader.setFloatUniform("radius", radiusPx)
@@ -207,7 +213,7 @@ private fun DrawScope.bindLens(
 /** Android 12 及以下：底片画在边缘一圈（不弯），再画厚度、暗线和上下沿高光。按压鼓起由外面的弹簧做，两边一样。 */
 private fun DrawScope.drawGlassLensWithoutShader(
     input: Shader, patterned: Boolean, radiusPx: Float, dark: Boolean, strength: Float, alpha: Float, tint: Color,
-    cache: LensPaintCache,
+    cache: LensPaintCache, rims: Float,
 ) {
     val w = size.width
     val h = size.height
@@ -229,16 +235,17 @@ private fun DrawScope.drawGlassLensWithoutShader(
         paint.shader = null
         paint.alpha = 255
     }
-    clipPath(outer) {
+    val rimAlpha = alpha * rims.coerceIn(0f, 1f)
+    if (rimAlpha > .001f) clipPath(outer) {
         // 厚度：上沿亮、下沿暗。
         drawRect(Brush.verticalGradient(
             0f to Color.White.copy(alpha = .30f * t), .22f to Color.White.copy(alpha = 0f),
-            .8f to Color.Black.copy(alpha = 0f), 1f to Color.Black.copy(alpha = (if (dark) .18f else .10f) * t)), alpha = alpha)
+            .8f to Color.Black.copy(alpha = 0f), 1f to Color.Black.copy(alpha = (if (dark) .18f else .10f) * t)), alpha = rimAlpha)
         // 暗线 0.7dp。
         val line = .7f * density
         drawRoundRect(Color.Black.copy(alpha = if (dark) .5f else .34f), topLeft = Offset(line / 2f, line / 2f),
             size = androidx.compose.ui.geometry.Size(w - line, h - line), cornerRadius = CornerRadius((corner - line / 2f).coerceAtLeast(0f)),
-            style = Stroke(line), alpha = alpha)
+            style = Stroke(line), alpha = rimAlpha)
         // 上下沿高光，紧贴暗线内侧。
         val rim = 1.3f * density
         val inset = line + rim / 2f
@@ -246,7 +253,7 @@ private fun DrawScope.drawGlassLensWithoutShader(
             0f to Color.White.copy(alpha = .95f), .3f to Color.White.copy(alpha = .28f),
             .7f to Color.White.copy(alpha = .28f), 1f to Color.White.copy(alpha = .55f)),
             topLeft = Offset(inset, inset), size = androidx.compose.ui.geometry.Size(w - inset * 2f, h - inset * 2f),
-            cornerRadius = CornerRadius((corner - inset).coerceAtLeast(0f)), style = Stroke(rim), alpha = alpha * min(t, 1f))
+            cornerRadius = CornerRadius((corner - inset).coerceAtLeast(0f)), style = Stroke(rim), alpha = rimAlpha * min(t, 1f))
     }
 }
 
@@ -271,6 +278,7 @@ uniform float dark;
 uniform float fade;
 uniform float4 tint;
 uniform float4 glow;
+uniform float rims;
 
 half4 main(float2 p) {
     float2 h = size * 0.5;
@@ -314,17 +322,17 @@ half4 main(float2 p) {
     }
 
     // 厚度：斜面里上沿亮、下沿暗。
-    float lit = clamp((dark > 0.5 ? 0.16 : 0.22) * t * e * max(-n.y, 0.0), 0.0, 1.0);
+    float lit = clamp((dark > 0.5 ? 0.16 : 0.22) * t * e * max(-n.y, 0.0) * rims, 0.0, 1.0);
     col = float3(lit) + col * (1.0 - lit);
     a = lit + a * (1.0 - lit);
-    float dim = clamp((dark > 0.5 ? 0.16 : 0.10) * t * e * max(n.y, 0.0), 0.0, 1.0);
+    float dim = clamp((dark > 0.5 ? 0.16 : 0.10) * t * e * max(n.y, 0.0) * rims, 0.0, 1.0);
     col = col * (1.0 - dim);
     a = dim + a * (1.0 - dim);
 
     // 外圈暗线 0.7dp。
     float lw = 0.7 * dp;
     float line = clamp(lw - inset + 0.5, 0.0, 1.0);
-    float la = line * (dark > 0.5 ? 0.5 : 0.36) * tt;
+    float la = line * (dark > 0.5 ? 0.5 : 0.36) * tt * rims;
     col = col * (1.0 - la);
     a = la + a * (1.0 - la);
 
@@ -334,7 +342,7 @@ half4 main(float2 p) {
     float topFace = smoothstep(0.15, 0.85, -n.y);
     float bottomFace = smoothstep(0.15, 0.85, n.y);
     float sideFace = 1.0 - max(topFace, bottomFace);
-    float shine = clamp(rimBand * (0.95 * topFace + 0.6 * bottomFace + 0.3 * sideFace) * min(t, 1.2), 0.0, 1.0);
+    float shine = clamp(rimBand * (0.95 * topFace + 0.6 * bottomFace + 0.3 * sideFace) * min(t, 1.2) * rims, 0.0, 1.0);
     col = float3(shine) + col * (1.0 - shine);
     a = shine + a * (1.0 - shine);
 
