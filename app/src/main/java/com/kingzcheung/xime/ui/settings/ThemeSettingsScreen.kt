@@ -170,7 +170,8 @@ private fun ThemeSettingsPage(
                         }, costItem = com.kingzcheung.xime.settings.PerformanceCosts.Item.LIQUID_GLASS)
                     if (glass.dark.enabled && com.kingzcheung.xime.ui.theme.LiquidGlass.enabled(context)) {
                         SettingsToggleItem(icon = Icons.TwoTone.AutoAwesome, title = "iOS 液态玻璃",
-                            subtitle = "通透键面、边缘厚度和月牙高光，按下鼓起回弹；关掉回到细亮边",
+                            subtitle = "FlClash 同款透镜玻璃：边缘折射、上下沿高光、按下鼓起回弹，工具栏玻璃滑块" +
+                                com.kingzcheung.xime.BuildConfig.LEARN_BUILD.takeIf { it.isNotEmpty() }?.let { "（测试版 learn-$it）" }.orEmpty(),
                             checked = com.kingzcheung.xime.ui.theme.LiquidGlass.rich(context),
                             onCheckedChange = { enabled ->
                                 changeAppearance(context, onThemeChanged) { SettingsPreferences.setGlassLiquidRich(context, enabled) }

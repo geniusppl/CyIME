@@ -80,10 +80,12 @@ internal fun ReorderableToolbar(
     // 玻璃透镜（11-09 用户：工具栏要 FlClash 底部浮动导航栏的玻璃和切换动效）。
     val lensOn = LiquidGlass.surfacesOn() && LiquidGlass.rich(LocalContext.current)
     val lens = rememberToolbarLensMotion()
-    // 停靠：最近点过的按钮开着就停它上面，否则停第一个开着的（听写按钮有自己的音量光圈，不算）。
+    // 停靠：最近点过的按钮开着就停它上面，否则停第一个开着的（听写按钮有自己的音量光圈，不算）；
+    // 都没开着时停在最近点过的那格（11-09 第二版：像 FlClash 导航栏一样滑块一直在，不再点完就消失）。
     var lastTouched by remember { mutableStateOf<String?>(null) }
     val actives = order.filter { id -> id != "voice" && actions.firstOrNull { it.item.id == id }?.active == true }
-    val restIndex = (lastTouched?.takeIf { it in actives } ?: actives.firstOrNull())?.let { order.indexOf(it) }?.takeIf { it >= 0 }
+    val restIndex = (lastTouched?.takeIf { it in actives } ?: actives.firstOrNull() ?: lastTouched?.takeIf { it != "voice" })
+        ?.let { order.indexOf(it) }?.takeIf { it >= 0 }
     lens.count = order.size
     lens.restIndex = { restIndex }
     val latestOrder by rememberUpdatedState(order)

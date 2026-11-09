@@ -101,6 +101,8 @@ android {
 
         // 构建信息
         buildConfigField("String", "GIT_HASH", "\"${getGitHash()}\"")
+        // 学英语测试版的 CI 序号（learn-N 里的 N），本地构建为空；只用于显示，不改 versionName（配置文件按它比较版本）。
+        buildConfigField("String", "LEARN_BUILD", "\"${(System.getenv("GITHUB_RUN_NUMBER") ?: "").filter { it.isDigit() }}\"")
         buildConfigField("boolean", "BUNDLED_MODELS", (providers.gradleProperty("bundleModels").orNull == "true").toString())
         // The elder package (elder-pack-spec.md); other bundled-model builds such as the friend package keep normal behaviour.
         buildConfigField("boolean", "ELDER", (providers.gradleProperty("elderEdition").orNull == "true").toString())

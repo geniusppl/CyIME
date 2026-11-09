@@ -224,7 +224,8 @@ fun AboutContent(
                         )
                         Spacer(modifier = Modifier.height(16.dp))
                         Text(
-                            text = "版本 ${AppInfo.versionName} (${AppInfo.versionCode})",
+                            text = "版本 ${AppInfo.versionName} (${AppInfo.versionCode})" +
+                                BuildConfig.LEARN_BUILD.takeIf { it.isNotEmpty() }?.let { " · 测试版 learn-$it" }.orEmpty(),
                             fontSize = 14.sp,
                             color = MaterialTheme.colorScheme.onSurface
                         )

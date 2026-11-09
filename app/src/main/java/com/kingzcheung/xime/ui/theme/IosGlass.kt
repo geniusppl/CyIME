@@ -14,6 +14,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
@@ -560,36 +561,20 @@ internal fun ToolbarGlassLens(
             layout(constraints.maxWidth, constraints.maxHeight) { placeable.place(left, top) }
         }
         .onGloballyPositioned { origin.value = it.positionInRoot() }
-    val surface = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-        val root = LocalView.current.rootView
-        val shared = LocalSharedKeyboardBackdrop.current?.takeIf { it.windowRoot === root }
-        val drawFrame: androidx.compose.ui.graphics.drawscope.DrawScope.() -> Unit =
-            remember(shared) { { drawSharedBackdropForKey(shared, origin.value) } }
-        val backdrop = rememberCanvasBackdrop(drawFrame)
-        val edge = if (shared?.image != null) 1f else 0f
-        // 淡白底色（lens 原版是透明的，工具栏上一片纯色时靠它和暗线认出透镜）。
-        val tint = Color.White.copy(alpha = if (dark) .07f else .24f)
-        Modifier.drawBackdrop(
-            backdrop = backdrop,
-            shape = { CircleShape },
-            effects = {
-                val t = motion.strength()
-                val local = motion.glowAt - motion.lensTopLeft
-                glassLens(size.height / 2f, dark, t, edge * min(t, 1f), local, motion.glowStrength() * min(t * 2f, 1f),
-                    motion.glowReach(), tint.copy(alpha = tint.alpha * min(t / LENS_REST_STRENGTH, 1f)))
-            },
-            highlight = null,
-            shadow = null,
-        )
-    } else {
-        val fill = Color.White.copy(alpha = if (dark) .16f else .42f)
-        val line = Color.Black.copy(alpha = if (dark) .25f else .12f)
-        Modifier.drawBehind {
+    // 11-09 第二版：不再走 Kyant drawBackdrop（真机上看不到滑块），和按键同一个直接画的透镜（[drawGlassLens]）。
+    val source = rememberLensBackdropSource(dark, (LocalKeyboardPalette.current?.surface ?: palette.surface))
+    // 淡白底色：工具栏上一片浅色时靠它、暗线和上下沿高光认出滑块。
+    val tint = Color.White.copy(alpha = if (dark) .10f else .34f)
+    val surface = Modifier.drawWithCache {
+        val cache = LensPaintCache()
+        onDrawBehind {
             val t = motion.strength()
-            if (t <= .001f) return@drawBehind
-            val corner = CornerRadius(size.height / 2f)
-            drawRoundRect(fill, cornerRadius = corner, alpha = min(t, 1f))
-            drawRoundRect(line, cornerRadius = corner, alpha = min(t, 1f), style = Stroke(.67f * density))
+            if (t <= .001f) return@onDrawBehind
+            // 停靠时 .6、抬起到 1；透镜本身按 1 起算，抬起再加强到 1.35（和按键一样）。
+            val shown = min(t / LENS_REST_STRENGTH, 1f)
+            val optics = 1f + .35f * motion.lift.value
+            drawGlassLens(source, origin.value, size.height / 2f, dark, optics, shown,
+                motion.glowAt - motion.lensTopLeft, motion.glowStrength() * min(t * 2f, 1f), motion.glowReach(), tint, cache)
         }
     }
     androidx.compose.foundation.layout.Box(modifier) {

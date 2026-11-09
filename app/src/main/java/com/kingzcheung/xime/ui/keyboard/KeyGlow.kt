@@ -52,15 +52,18 @@ internal fun Modifier.keyGlow(
     val visibility by rememberUpdatedState(glowVisibility.coerceIn(0f, 1f))
     val preferences = LocalKeyboardInputPreferences.current
     // 液态玻璃（玻璃开着才生效）代替按键上的视觉样式；蜂窝布局的六边形键不画（高光按圆角矩形画）。
+    val context = androidx.compose.ui.platform.LocalContext.current
     val liquidCap = applyMaterial && liquid && preferences.frostedGlass.enabled && !LocalHoneycombKeys.current &&
-        com.kingzcheung.xime.ui.theme.LiquidGlass.enabled(androidx.compose.ui.platform.LocalContext.current)
+        com.kingzcheung.xime.ui.theme.LiquidGlass.enabled(context)
+    // iOS 透镜自带按压弹簧（鼓起、跟手、回弹），原来的键帽缩放动画（先缩到 0.67）会和它打架，透镜开着时不做。
+    val lensPress = liquidCap && com.kingzcheung.xime.ui.theme.LiquidGlass.rich(context)
     val paintedCap = when {
         liquidCap -> Modifier.liquidGlassCap(cap, LocalKeyCornerRadius.current)
         applyMaterial -> cap.visualMaterial(VisualStyles.current, LocalKeyCornerRadius.current, materialLevel)
         else -> cap
     }
     val glowEnabled = preferences.keyGlowEnabled
-    val motionEnabled = preferences.keyAnimationEnabled && animateCap
+    val motionEnabled = preferences.keyAnimationEnabled && animateCap && !lensPress
     if (!glowEnabled && !motionEnabled) return@composed this.then(paintedCap)
     // One coherent colour per press, as in the reference; overlapping squares
     // vary in brightness instead of mixing three unrelated theme colours.

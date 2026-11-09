@@ -38,8 +38,6 @@ import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.Dp
 import com.kingzcheung.xime.settings.SettingsPreferences
-import com.kyant.backdrop.backdrops.rememberCanvasBackdrop
-import com.kyant.backdrop.drawBackdrop
 
 /**
  * 液态玻璃（主题与外观 › 材质效果，默认关；打开时把玻璃一起打开）。
@@ -123,40 +121,27 @@ internal fun Modifier.liquidGlassCap(cap: Modifier, radius: Dp): Modifier = comp
     }
     val rich = LiquidGlass.rich(androidx.compose.ui.platform.LocalContext.current)
     if (!rich) return@composed observed.then(liquidRefraction(radius)).then(cap).then(liquidRim(radius, dark, held))
-    // Android 12 及以下没有运行时着色器，透镜做不了，退回手画的高光；按压手感和透镜同一套（抬起、鼓起、果冻、回弹）。
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
-        val press = rememberGlassKeyPress()
-        return@composed observed.then(press.modifier).then(cap).then(liquidRichRim(radius, dark, held))
-    }
-    // iOS 样式（11-09）：底片和绘制用 Kyant0/AndroidLiquidGlass（Apache-2.0），玻璃着色器和按压手感
-    // 照 FlClash / prism_ui（GPL-3.0，chen08209）的浮动导航栏透镜移植，与工具栏透镜共用，见 [glassLens] 和 [GlassKeyPress]。
-    // 输入法读不到背后应用的画面，只能弯键盘自己的背景图；纯色主题底片铺主题底色，只剩高光、暗线、厚度和指尖光。
+    // iOS 样式：玻璃着色器和按压手感照 FlClash / prism_ui（GPL-3.0，chen08209）的浮动导航栏透镜移植，与工具栏透镜共用
+    // （[GlassKeyPress]、[drawGlassLens]）。11-09 第二版：learn-23 走 Kyant drawBackdrop（图层 + RenderEffect），
+    // 真机上按键和以前一模一样；现在着色器当画笔直接画在键帽底色上面、文字下面，底片是键盘背景本身
+    // （共用背景图 / 主题渐变 / 底色），Android 12 及以下手画同样的边缘、暗线和高光。
     val press = rememberGlassKeyPress()
-    val root = LocalView.current.rootView
-    val shared = LocalSharedKeyboardBackdrop.current?.takeIf { it.windowRoot === root }
+    val keyPalette = LocalKeyboardPalette.current
+    val source = rememberLensBackdropSource(dark, keyPalette?.surface ?: palette.surface)
     val origin = remember { mutableStateOf<Offset?>(null) }
-    val drawFrame: androidx.compose.ui.graphics.drawscope.DrawScope.() -> Unit =
-        remember(shared) { { drawSharedBackdropForKey(shared, origin.value) } }
-    val backdrop = rememberCanvasBackdrop(drawFrame)
-    val shape = androidx.compose.foundation.shape.RoundedCornerShape(radius)
-    // 有背景图时斜面一圈画折射后的图；纯色时这一圈不画（画了像键缩了一圈），中间都透明露出键帽底色。
-    val edge = if (shared?.image != null) 1f else 0f
-    // 位置在变形之前量，按下放大、拖动时底片不跟着跑。
-    // 11-09 修：玻璃原来画在 cap 之前，被键帽底色整个盖住，真机上看不出变化；现在 cap（裁剪 + 底色）先画，
-    // 玻璃叠在底色上面、文字下面；press.modifier 的缩放仍包住两者。
+    // 位置在变形之前量，按下放大、拖动时底片不跟着跑；press.modifier 的缩放包住键帽和玻璃。
     observed.onGloballyPositioned { origin.value = it.positionInRoot() }
         .then(press.modifier)
         .then(cap)
-        .drawBackdrop(
-            backdrop = backdrop,
-            shape = { shape },
-            effects = {
-                glassLens(radius.toPx(), dark, press.strength(), edge, press.glowAt,
-                    press.glowStrength(), press.glowReach())
-            },
-            highlight = null,
-            shadow = null,
-        )
+        .drawWithCache {
+            val lens = LensPaintCache()
+            val radiusPx = radius.toPx()
+            onDrawWithContent {
+                drawGlassLens(source, origin.value, radiusPx, dark, press.strength(), 1f,
+                    press.glowAt, press.glowStrength(), press.glowReach(), Color.Transparent, lens)
+                drawContent()
+            }
+        }
 }
 
 /** 在按键自己的坐标里画共用键盘背景（和 [liquidRefraction33] 同一套对位）；没有背景图时铺主题底色。 */
