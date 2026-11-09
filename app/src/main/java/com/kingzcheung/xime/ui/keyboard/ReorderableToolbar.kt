@@ -134,6 +134,8 @@ internal fun ReorderableToolbar(
         val pillWidth = with(density) { pill.width.toPx() }
         val pillHeight = with(density) { pill.height.toPx() }
         val leaveMargin = with(density) { 8.dp.toPx() }
+        // 内层 Box 的作用域里不能隐式读 BoxWithConstraints 的 maxWidth，先取出来。
+        val viewport = maxWidth
         // 透镜和按钮放在同一个滚动内容里，横向滚动时一起走。
         Box(Modifier.horizontalScroll(scroll).widthIn(min = maxWidth)
             .then(if (lensOn) Modifier.pointerInput(pitch) {
@@ -182,7 +184,7 @@ internal fun ReorderableToolbar(
             } else Modifier)) {
             if (lensOn) ToolbarGlassLens(lens, pitch, pillWidth, pillHeight, Modifier.matchParentSize())
             CompositionLocalProvider(LocalToolbarLens provides lensOn) {
-                Row(Modifier.widthIn(min = maxWidth),
+                Row(Modifier.widthIn(min = viewport),
                     horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
                     order.forEachIndexed { index, id ->
                         val action = actions.firstOrNull { it.item.id == id } ?: return@forEachIndexed
