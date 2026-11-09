@@ -299,6 +299,7 @@ dependencies {
 
     // Coil (Image Loading)
     implementation(libs.coil)
+    implementation(libs.kyant.backdrop)
 
     // OkHttp for WebSocket and model download
     implementation("com.squareup.okhttp3:okhttp:5.4.0")

@@ -38,6 +38,12 @@ import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.Dp
 import com.kingzcheung.xime.settings.SettingsPreferences
+import com.kyant.backdrop.backdrops.rememberCanvasBackdrop
+import com.kyant.backdrop.drawBackdrop
+import com.kyant.backdrop.effects.blur
+import com.kyant.backdrop.effects.lens
+import com.kyant.backdrop.effects.vibrancy
+import com.kyant.backdrop.highlight.Highlight
 
 /**
  * 液态玻璃（主题与外观 › 材质效果，默认关；打开时把玻璃一起打开）。
@@ -127,9 +133,60 @@ internal fun Modifier.liquidGlassCap(cap: Modifier, radius: Dp): Modifier = comp
         animationSpec = androidx.compose.animation.core.spring(
             dampingRatio = if (held.value) .6f else .45f, stiffness = if (held.value) 700f else 380f),
         label = "liquidBulge")
-    observed.then(Modifier.graphicsLayer { scaleX = bulge; scaleY = bulge })
-        // iOS 样式不做边缘折射：截图里折射那一圈像个内框，反而不像玻璃（11-09 用户反馈）。
-        .then(cap).then(liquidRichRim(radius, dark, held))
+    val bulgeLayer = Modifier.graphicsLayer { scaleX = bulge; scaleY = bulge }
+    val pressed = observed.then(bulgeLayer)
+    // Android 12 及以下没有运行时着色器，透镜做不了，退回手画的高光。
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return@composed pressed.then(cap).then(liquidRichRim(radius, dark, held))
+    // iOS 样式（11-09 用户要求接入 Kyant0/AndroidLiquidGlass）：键盘背景当底片，每个键用库里的透镜
+    // 把底片在边缘弯折、带一点色散，再加库的方向高光。输入法读不到背后应用的画面，只能弯键盘自己的背景。
+    val root = LocalView.current.rootView
+    val shared = LocalSharedKeyboardBackdrop.current?.takeIf { it.windowRoot === root }
+    val origin = remember { mutableStateOf<Offset?>(null) }
+    val drawFrame: androidx.compose.ui.graphics.drawscope.DrawScope.() -> Unit =
+        remember(shared) { { drawSharedBackdropForKey(shared, origin.value) } }
+    val backdrop = rememberCanvasBackdrop(drawFrame)
+    val shape = androidx.compose.foundation.shape.RoundedCornerShape(radius)
+    // 位置在鼓起之前量，按下放大时底片不跟着跑。
+    observed.onGloballyPositioned { origin.value = it.positionInRoot() }.then(bulgeLayer)
+        .drawBackdrop(
+            backdrop = backdrop,
+            shape = { shape },
+            effects = {
+                vibrancy()
+                blur(1.5f * density)
+                lens(
+                    (size.minDimension * .22f).coerceAtMost(14f * density),
+                    (size.minDimension * .45f).coerceAtMost(28f * density),
+                    chromaticAberration = true)
+            },
+            highlight = { Highlight.Default.copy(alpha = if (dark) .55f else .9f) },
+            shadow = null,
+            onDrawSurface = { if (held.value) drawRect(Color.White.copy(alpha = if (dark) .08f else .14f)) },
+        )
+        .then(cap)
+}
+
+/** 在按键自己的坐标里画共用键盘背景（和 [liquidRefraction33] 同一套对位），没有背景图时不画。 */
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawSharedBackdropForKey(
+    shared: SharedKeyboardBackdrop?, at: Offset?,
+) {
+    shared ?: return
+    at ?: return
+    val frame = shared.frame
+    val image = shared.image
+    val width = frame.size.width.toFloat()
+    val height = frame.size.height.toFloat()
+    // 纯色主题没有图可弯，什么都不画：键面照旧，只剩库的高光。
+    if (image == null || width <= 0f || height <= 0f || image.width <= 0 || image.height <= 0) return
+    val offset = frame.origin + shared.windowToRoot - at
+    val motion = shared.motion?.transform ?: BackgroundMotionTransform.Identity
+    val left = offset.x + width * ((1f - motion.scale) / 2f + motion.shiftX)
+    val top = offset.y + height * ((1f - motion.scale) / 2f + motion.shiftY)
+    drawImage(image,
+        dstOffset = androidx.compose.ui.unit.IntOffset(left.toInt(), top.toInt()),
+        dstSize = androidx.compose.ui.unit.IntSize((width * motion.scale).toInt(), (height * motion.scale).toInt()),
+        alpha = shared.opacity.coerceIn(0f, 1f),
+        filterQuality = androidx.compose.ui.graphics.FilterQuality.Low)
 }
 
 /**
