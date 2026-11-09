@@ -38,6 +38,7 @@ import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.Dp
 import com.kingzcheung.xime.settings.SettingsPreferences
+import com.kingzcheung.xime.ui.keyboard.glassTextHalo
 
 /**
  * 液态玻璃（主题与外观 › 材质效果，默认关；打开时把玻璃一起打开）。
@@ -129,6 +130,11 @@ internal fun Modifier.liquidGlassCap(cap: Modifier, radius: Dp): Modifier = comp
     val keyPalette = LocalKeyboardPalette.current
     val source = rememberLensBackdropSource(dark, keyPalette?.surface ?: palette.surface)
     val origin = remember { mutableStateOf<Offset?>(null) }
+    // 11-09 第三版：透出模式（后面是系统模糊的应用）不取样主题底片，键帽本身是一层淡白（frostedKeyColor），
+    // 字和图标后面垫一块很软的反色托底，后面换成深色/浅色内容时也读得清。
+    val seeThrough = com.kingzcheung.xime.ui.keyboard.LocalKeyboardInputPreferences.current.frostedGlass.seeThrough
+    val labelHalo = if (seeThrough) com.kingzcheung.xime.ui.keyboard.GlassTextHalo(
+        if (dark) Color.Black else Color.White, if (dark) IOS_SEE_THROUGH_HALO_DARK else IOS_SEE_THROUGH_HALO_LIGHT) else null
     // 位置在变形之前量，按下放大、拖动时底片不跟着跑；press.modifier 的缩放包住键帽和玻璃。
     observed.onGloballyPositioned { origin.value = it.positionInRoot() }
         .then(press.modifier)
@@ -138,11 +144,16 @@ internal fun Modifier.liquidGlassCap(cap: Modifier, radius: Dp): Modifier = comp
             val radiusPx = radius.toPx()
             onDrawWithContent {
                 drawGlassLens(source, origin.value, radiusPx, dark, press.strength(), 1f,
-                    press.glowAt, press.glowStrength(), press.glowReach(), Color.Transparent, lens)
+                    press.glowAt, press.glowStrength(), press.glowReach(), Color.Transparent, lens, refract = !seeThrough)
                 drawContent()
             }
         }
+        .then(if (labelHalo != null) Modifier.glassTextHalo(labelHalo) else Modifier)
 }
+
+/** 透出模式里键面字后面的软托底浓度（浅色白晕、深色黑晕）；后面本来就同色时看不出来。 */
+internal const val IOS_SEE_THROUGH_HALO_LIGHT = .55f
+internal const val IOS_SEE_THROUGH_HALO_DARK = .45f
 
 /** 在按键自己的坐标里画共用键盘背景（和 [liquidRefraction33] 同一套对位）；没有背景图时铺主题底色。 */
 internal fun androidx.compose.ui.graphics.drawscope.DrawScope.drawSharedBackdropForKey(

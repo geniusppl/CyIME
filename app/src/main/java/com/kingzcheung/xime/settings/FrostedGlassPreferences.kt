@@ -14,6 +14,11 @@ data class FrostedGlassConfig(
      * 工具栏也不再单独补厚，整块跟着滑条走（用户反馈 11-03：更新后工具栏不跟着透明度调整）。
      */
     val lightPanelCustom: Boolean = false,
+    /**
+     * iOS 液态玻璃的「透出后面 App」模式（只在运行时由 [com.kingzcheung.xime.ui.theme.iosSeeThrough] 打开，不存盘）：
+     * 键盘底色只剩一层淡色、键帽是淡白，靠系统窗口模糊看见后面的应用。
+     */
+    val seeThrough: Boolean = false,
 ) {
     fun normalized(defaults: FrostedGlassConfig = FrostedGlassConfig.defaults(true)): FrostedGlassConfig = copy(
         blurRadiusDp = (blurRadiusDp.takeIf { it.isFinite() } ?: defaults.blurRadiusDp).coerceIn(0f, 40f),

@@ -565,6 +565,8 @@ internal fun ToolbarGlassLens(
     val source = rememberLensBackdropSource(dark, (LocalKeyboardPalette.current?.surface ?: palette.surface))
     // 淡白底色：工具栏上一片浅色时靠它、暗线和上下沿高光认出滑块。
     val tint = Color.White.copy(alpha = if (dark) .10f else .34f)
+    // 透出模式：后面是系统模糊的应用，不取样主题底片（否则滑块边上一圈不透明的渐变）。
+    val refract = !com.kingzcheung.xime.ui.keyboard.LocalKeyboardInputPreferences.current.frostedGlass.seeThrough
     val surface = Modifier.drawWithCache {
         val cache = LensPaintCache()
         onDrawBehind {
@@ -574,7 +576,7 @@ internal fun ToolbarGlassLens(
             val shown = min(t / LENS_REST_STRENGTH, 1f)
             val optics = 1f + .35f * motion.lift.value
             drawGlassLens(source, origin.value, size.height / 2f, dark, optics, shown,
-                motion.glowAt - motion.lensTopLeft, motion.glowStrength() * min(t * 2f, 1f), motion.glowReach(), tint, cache)
+                motion.glowAt - motion.lensTopLeft, motion.glowStrength() * min(t * 2f, 1f), motion.glowReach(), tint, cache, refract = refract)
         }
     }
     androidx.compose.foundation.layout.Box(modifier) {

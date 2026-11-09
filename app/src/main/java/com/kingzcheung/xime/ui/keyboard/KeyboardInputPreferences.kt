@@ -1,5 +1,6 @@
 package com.kingzcheung.xime.ui.keyboard
 
+import com.kingzcheung.xime.ui.theme.withIosSeeThrough
 import kotlin.math.roundToInt
 import android.content.Context
 import android.content.SharedPreferences
@@ -580,5 +581,10 @@ fun rememberKeyboardInputPreferences(isDark: Boolean? = null): KeyboardInputPref
         val dark = isDark ?: FrostedGlassPreferences.isDark(context)
         settings.copy(frostedGlass = preview.forAppearance(dark)
             .legibleForTheme(SettingsPreferences.getKeyboardTheme(context), dark))
-    } else settings
+    } else {
+        // iOS 液态玻璃：系统窗口模糊可用时键盘透出后面应用的模糊画面（见 ui/theme/IosSeeThrough.kt）。
+        val dark = isDark ?: FrostedGlassPreferences.isDark(context)
+        val glass = settings.frostedGlass.withIosSeeThrough(dark)
+        if (glass == settings.frostedGlass) settings else remember(settings, glass) { settings.copy(frostedGlass = glass) }
+    }
 }

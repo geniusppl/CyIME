@@ -157,9 +157,15 @@ internal class LensPaintCache {
 internal fun DrawScope.drawGlassLens(
     source: LensBackdropSource, at: Offset?, radiusPx: Float, dark: Boolean, strength: Float, alpha: Float,
     glowAt: Offset, glow: Float, glowReachPx: Float, tint: Color, cache: LensPaintCache,
+    /**
+     * 边缘一圈是否取样底片折射。iOS 透出模式（后面是系统模糊的应用，读不到像素）传 false：
+     * 取样主题底片会在键里画出一圈不透明的「内框」，只留厚度、暗线、高光和指尖光。
+     */
+    refract: Boolean = true,
 ) {
     if (alpha <= .001f || size.width < 1f || size.height < 1f) return
-    val (input, patterned) = cache.input(source, at)
+    val (input, sampled) = cache.input(source, at)
+    val patterned = sampled && refract
     val drawn = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
         drawLensShader(input, radiusPx, dark, strength, if (patterned) 1f else 0f, alpha, glowAt, glow, glowReachPx, tint, cache)
     if (!drawn) drawGlassLensWithoutShader(input, patterned, radiusPx, dark, strength, alpha, tint, cache)

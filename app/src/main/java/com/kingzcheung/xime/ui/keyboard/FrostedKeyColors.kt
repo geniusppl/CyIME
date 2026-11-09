@@ -26,6 +26,7 @@ internal fun frostedKeyColor(
     if (!config.enabled) return if (pressed) lerp(background, foreground.copy(alpha = background.alpha), PRESSED_KEY_TINT) else legacyStateColor
 
     val opacity = config.keyOpacity.takeIf { it.isFinite() }?.coerceIn(0f, 1f) ?: 0.22f
+    if (config.seeThrough) return seeThroughKeyColor(background, opacity, pressed, highlighted, opacityScale)
     // Dark keycaps must not lose their elevation twice: #1C1C1C at 20% would
     // become #060606 over black. Compensate the tint (not alpha), preserving
     // the theme's channel ratios and its original color at full opacity.
@@ -45,6 +46,28 @@ internal fun frostedKeyColor(
     // Frosted material owns its opacity independently of an imported theme's alpha.
     // Disabled controls and transparent hit regions can explicitly scale the material.
     return tint.copy(alpha = opacity * opacityScale.coerceIn(0f, 1f))
+}
+
+/**
+ * iOS 液态玻璃透出模式的键帽：一层淡白，后面应用的模糊画面透过来（见 ui/theme/IosSeeThrough.kt）。
+ * [opacityScale] 在这里可以大于 1：功能键传 [com.kingzcheung.xime.ui.theme.IOS_FUNCTION_KEY_SCALE] 厚一档；
+ * 禁用、透明热区照旧按比例变淡。主题里鲜艳的键（强调色回车等）保留本色，只是也变透。
+ */
+private fun seeThroughKeyColor(background: Color, opacity: Float, pressed: Boolean, highlighted: Boolean,
+    opacityScale: Float): Color {
+    val scale = opacityScale.takeIf { it.isFinite() }?.coerceIn(0f, 2f) ?: 1f
+    if (scale <= 0f) return Color.Transparent
+    val chroma = maxOf(background.red, background.green, background.blue) -
+        minOf(background.red, background.green, background.blue)
+    val feedback = when {
+        pressed -> .10f
+        highlighted -> .05f
+        else -> 0f
+    }
+    if (chroma > .3f && background.alpha > .5f) {
+        return background.copy(alpha = (.62f * minOf(scale, 1f) + feedback).coerceIn(0f, 1f))
+    }
+    return Color.White.copy(alpha = (opacity * scale + feedback * minOf(scale, 1f)).coerceIn(0f, 1f))
 }
 
 /** 键帽最亮通道低于此值视为近黑（#29292B 以下）；其他主题的深色键帽都高于此值。 */
@@ -79,6 +102,11 @@ internal const val GLASS_FUNCTION_KEY_SCALE = 0.5f
 @androidx.compose.runtime.Composable
 internal fun glassFunctionKeyScale(background: Color): Float {
     val palette = com.kingzcheung.xime.ui.theme.LocalKeyboardPalette.current ?: return 1f
+    // iOS 液态玻璃透出模式：功能键比字母键厚一档（iOS 键盘的功能键颜色更深/更实）。
+    if (LocalKeyboardInputPreferences.current.frostedGlass.seeThrough) {
+        return if (com.kingzcheung.xime.ui.theme.TransparentGlassTheme.isGlassFunctionKey(background) ||
+            palette.isThemeFunctionKey(background)) com.kingzcheung.xime.ui.theme.IOS_FUNCTION_KEY_SCALE else 1f
+    }
     if (com.kingzcheung.xime.ui.theme.TransparentGlassTheme.isGlassFunctionKey(background)) return 1f
     // 白色玻璃不减半：后面是深色应用时，更透的功能键会透成深灰块（用户 11-03 截图）；改为同样厚、颜色深一档。
     if (palette.isWhiteGlass()) return 1f
