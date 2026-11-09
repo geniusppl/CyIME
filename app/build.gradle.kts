@@ -346,7 +346,7 @@ dependencies {
     testImplementation(libs.kotlinx.coroutines.core)
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.11.0")
     testImplementation("org.mockito:mockito-core:5.23.0")
-    testImplementation("org.mockito.kotlin:mockito-kotlin:6.3.0")
+    testImplementation("org.mockito.kotlin:mockito-kotlin:6.4.0")
     // JVM 单测使用真实 org.json 实现（android.jar 内为抛异常的 stub）
     testImplementation("org.json:json:20240303")
     // 在电脑上用真实 Compose 代码渲染界面截图（Robolectric 原生绘制），不用模拟器。
