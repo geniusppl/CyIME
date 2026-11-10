@@ -140,3 +140,18 @@ port KunBox's liquidGlassCrystalSurface, liquidGlassPanelBrush and hollowShadow
 (ui/theme/LiquidGlassTheme.kt) and its LiquidGlassSelectedIndicator styling
 (ui/components/AppNavBar.kt), with tint values adapted for the see-through keyboard
 (app/src/main/java/com/kingzcheung/xime/ui/theme/KunBoxGlass.kt).
+
+================================================================================
+Nekogram / prism_ui (liquid glass lens and jelly press)
+================================================================================
+
+Source: https://github.com/geniusppl/Nekogram (branch smart-download, commit cb46ab29f),
+a fork of Nekogram / Telegram for Android, licensed under the GNU GPL.
+Its lens shader and springs are ported from https://github.com/chen08209/prism_ui
+(the UI kit of FlClash by chen08209), licensed under GPL-3.0, like CyIME.
+
+The iOS liquid glass key caps and toolbar slider use Nekogram's
+res/raw/neko_flclash_glass.agsl (an AGSL port of prism_ui shaders/liquid_glass.frag),
+the FlClashLens lens parameters and shadow, the GlassDialogCards / NekoGlass card
+shadow, sheen, rim and pill, and the JellyGlassIndicator lift / jelly / press springs
+(app/src/main/java/com/kingzcheung/xime/ui/theme/NekoGlassPaint.kt and IosGlass.kt).

@@ -17,7 +17,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
@@ -53,6 +55,13 @@ import com.kingzcheung.xime.ui.keyboard.glassTextHalo
 internal object LiquidGlass {
     private val on = mutableStateOf(false)
     private val rich = mutableStateOf(true)
+    private val jelly = mutableStateOf(true)
+
+    /** 「果冻特效」（见 [SettingsPreferences.KEY_GLASS_JELLY]）；可在组合和绘制里读。 */
+    fun jelly(context: Context): Boolean {
+        if (listener == null) bind(context.applicationContext ?: context)
+        return jelly.value
+    }
 
     /** 浓郁样式（见 [SettingsPreferences.KEY_GLASS_LIQUID_RICH]）；可在组合和绘制里读。 */
     fun rich(context: Context): Boolean {
@@ -93,9 +102,11 @@ internal object LiquidGlass {
         val prefs = SettingsPreferences.getPrefsPublic(context)
         on.value = SettingsPreferences.glassLiquid(context)
         rich.value = SettingsPreferences.glassLiquidRich(context)
+        jelly.value = SettingsPreferences.glassJelly(context)
         val l = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
             if (key == null || key == SettingsPreferences.KEY_GLASS_LIQUID) on.value = SettingsPreferences.glassLiquid(context)
             if (key == null || key == SettingsPreferences.KEY_GLASS_LIQUID_RICH) rich.value = SettingsPreferences.glassLiquidRich(context)
+            if (key == null || key == SettingsPreferences.KEY_GLASS_JELLY) jelly.value = SettingsPreferences.glassJelly(context)
         }
         listener = l
         prefs.registerOnSharedPreferenceChangeListener(l)
@@ -123,40 +134,40 @@ internal fun Modifier.liquidGlassCap(cap: Modifier, radius: Dp): Modifier = comp
     }
     val rich = LiquidGlass.rich(androidx.compose.ui.platform.LocalContext.current)
     if (!rich) return@composed observed.then(liquidRefraction(radius)).then(cap).then(liquidRim(radius, dark, held))
-    // iOS 样式：玻璃着色器和按压手感照 FlClash / prism_ui（GPL-3.0，chen08209）的浮动导航栏透镜移植，与工具栏透镜共用
-    // （[GlassKeyPress]、[drawGlassLens]）。11-09 第二版：learn-23 走 Kyant drawBackdrop（图层 + RenderEffect），
-    // 真机上按键和以前一模一样；现在着色器当画笔直接画在键帽底色上面、文字下面，底片是键盘背景本身
-    // （共用背景图 / 主题渐变 / 底色），Android 12 及以下手画同样的边缘、暗线和高光。
+    // iOS 样式。11-10 第五版（用户：Nekogram 最新版的玻璃材质和果冻效果很好，每个键都要）：整套换成
+    // geniusppl/Nekogram（cb46ab29f，GPL；透镜与弹簧移植自 chen08209/prism_ui，GPL-3.0）——
+    // 键外软阴影（GlassDialogCards）+ 抬起阴影（FlClashLens.drawShadow）+ 键帽底色 +
+    // neko_flclash_glass 着色器取样键盘背景（[drawNekoGlass]，静止 a = .75、抬起到 1）+ 上部光泽（NekoGlass.drawSheen），
+    // 按压是 JellyGlassIndicator 的抬起/果冻/回弹（[GlassKeyPress]，「果冻特效」可关）。功能键同样。
     val press = rememberGlassKeyPress()
     val keyPalette = LocalKeyboardPalette.current
     val source = rememberLensBackdropSource(dark, keyPalette?.surface ?: palette.surface)
     val origin = remember { mutableStateOf<Offset?>(null) }
-    // 11-09 第三版：透出模式（后面是系统模糊的应用）不取样主题底片，键帽本身是一层淡白（frostedKeyColor），
-    // 字和图标后面垫一块很软的反色托底，后面换成深色/浅色内容时也读得清。
+    // 透出模式（后面是系统模糊的应用，读不到像素）：键帽本身是一层淡白（frostedKeyColor），底片用主题背景按 0x73
+    // （Nekogram 液态玻璃底栏玻璃的不透明度上限）；不透出时按 GlassDialogCards 的填充比例透出背景
+    // （浅色 36%、深色 44%，其余是键帽底色）。字和图标后面垫一块很软的反色托底。
     val seeThrough = com.kingzcheung.xime.ui.keyboard.LocalKeyboardInputPreferences.current.frostedGlass.seeThrough
+    val content = if (seeThrough) NEKO_SEE_THROUGH_CONTENT else nekoCardBackdropShare(dark)
     val labelHalo = if (seeThrough) com.kingzcheung.xime.ui.keyboard.GlassTextHalo(
         if (dark) Color.Black else Color.White, if (dark) IOS_SEE_THROUGH_HALO_DARK else IOS_SEE_THROUGH_HALO_LIGHT) else null
-    // 11-09 第四版：键帽质感换成 KunBox（roseforljh/KunBox，MIT）的晶体表面——左上焦散、右下深度、迎光浮雕边、
-    // 外亮边，外加只画在键外的软阴影（[kunBoxHollowShadow]）；透镜只留折射（有底片时）和指尖光，按压弹簧不变。
-    val surfaceColor = palette.surface
-    // 位置在变形之前量，按下放大、拖动时底片不跟着跑；press.modifier 的缩放包住阴影、键帽和玻璃。
+    // 位置在变形之前量，按下长大、拉动时底片不跟着跑；press.modifier 的缩放包住阴影、键帽和玻璃。
     observed.onGloballyPositioned { origin.value = it.positionInRoot() }
+        .zIndex(if (press.raised) 1f else 0f)
         .then(press.modifier)
-        .kunBoxHollowShadow(radius, color = Color.Black, alpha = if (dark) .24f else .10f,
-            blurRadius = 3.5.dp, offsetY = 1.5.dp)
+        .drawBehind { drawNekoLiftShadow(radius.toPx(), press.lift.value, dark) }
+        .nekoCardShadow(radius, dark)
         .then(cap)
         .drawWithCache {
             val lens = LensPaintCache()
             val radiusPx = radius.toPx()
-            val crystal = kunBoxCrystal(radiusPx, dark, KunBoxGlassRole.KEY, surfaceColor)
             onDrawWithContent {
-                val strength = press.strength()
-                drawKunBoxCrystalUnder(crystal, boost = (strength - 1f) * 1.6f)
-                drawGlassLens(source, origin.value, radiusPx, dark, strength, 1f,
-                    press.glowAt, press.glowStrength(), press.glowReach(), Color.Transparent, lens,
-                    refract = !seeThrough, rims = 0f)
+                val (input, _) = lens.input(source, origin.value)
+                val a = press.glass()
+                if (!drawNekoGlass(input, radiusPx, a, dark, content, 1f, lens.paint)) {
+                    drawNekoGlassFallback(input, radiusPx, dark, content, 1f, lens.paint)
+                }
+                drawNekoSheen(radiusPx, dark, 1f)
                 drawContent()
-                drawKunBoxCrystalOver(crystal)
             }
         }
         .then(if (labelHalo != null) Modifier.glassTextHalo(labelHalo) else Modifier)

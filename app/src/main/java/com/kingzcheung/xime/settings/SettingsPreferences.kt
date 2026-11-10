@@ -52,6 +52,13 @@ object SettingsPreferences {
     fun setGlassLiquidRich(context: Context, enabled: Boolean) {
         getPrefs(context).edit().putBoolean(KEY_GLASS_LIQUID_RICH, enabled).apply()
     }
+    /** 自用学习版：iOS 液态玻璃的「果冻特效」（Nekogram 同款按键/工具栏滑块抬起、拉长压扁、回弹），默认开。 */
+    const val KEY_GLASS_JELLY = "glass_jelly"
+    fun glassJelly(context: Context): Boolean =
+        getPrefs(context).getBoolean(KEY_GLASS_JELLY, true)
+    fun setGlassJelly(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_GLASS_JELLY, enabled).apply()
+    }
     const val KEY_PUNCTUATION_FULL_WIDTH = "punctuation_full_width"
     fun punctuationFullWidth(context: Context, default: Boolean): Boolean =
         getPrefs(context).getBoolean(KEY_PUNCTUATION_FULL_WIDTH, default)

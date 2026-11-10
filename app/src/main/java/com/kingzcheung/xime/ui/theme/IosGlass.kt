@@ -205,31 +205,31 @@ internal abstract class LensMotion {
 
 // ---------------------------------------------------------------- 按键
 
-// 按下鼓起最多 1/8（导航栏 _pressGrowth），且不超过 8dp（键小，免得压住邻键太多）。
-private const val PRESS_GROWTH = .125f
-private const val MAX_GROWTH_DP = 8f
+// 11-10 第五版：按键的果冻换成 Nekogram JellyGlassIndicator（geniusppl/Nekogram cb46ab29f，GPL；常数来自 prism_ui
+// navigation_dock.dart，GPL-3.0）的同一套：按下 _liftSpring 抬起、透镜四周长 8dp（_lensGrowth）；手指拖出键外
+// 才拉（_rubberBand，限位 min(宽, 高) × 7/32，拉时 _trackSpring、放回 _pressSpring），按拉动速度拉长、刹车压扁
+// （_wobble，宽高互相 1.4 倍、不低于一半），拉伸 pull / 宽 × .5 并跟着平移（_PressTransform）；
+// 松手要抬满（.975）且回到原位（.04 格）才 _liftSpring 放下（_dropLift）。
+// 关掉「果冻特效」：只留抬起（玻璃加强、阴影），键不长大、不拉、不变形。
 private const val PULL_LIMIT = 7f / 32f
 private const val PULL_STRETCH = .5f
-// 抬起时玻璃加强（折射、高光、暗线按 1 + .35·lift）。
-private const val KEY_LIFT_BOOST = .35f
 
-/**
- * 按键的透镜手感，和导航栏透镜同一套：按下 _liftSpring 抬起、鼓起；拖动时透镜跟手（_followSpring，橡皮筋限位），
- * 按速度横竖各自拉长、刹车压扁（_wobble）；松手 _settleSpring 回弹；轻点也先抬满再放下（UIKit 的做法）。
- */
 @Stable
 internal class GlassKeyPress(private val density: Float) : LensMotion() {
     val lift = LensSpring(0f)
-    val swell = LensSpring(0f)
     val pullX = LensSpring(0f, rest = .05f)
     val pullY = LensSpring(0f, rest = .05f)
     val jellyX = LensSpring(0f, rest = JELLY_REST)
     val jellyY = LensSpring(0f, rest = JELLY_REST)
-    val glow = LensSpring(0f)
-    val glowSpread = LensSpring(0f)
-    private val glowAtState = mutableStateOf(Offset.Zero)
-    val glowAt: Offset get() = glowAtState.value
-    override val springs = listOf(lift, swell, pullX, pullY, jellyX, jellyY, glow, glowSpread)
+    override val springs = listOf(lift, pullX, pullY, jellyX, jellyY)
+    private val raisedState = mutableStateOf(false)
+    /** 抬起中（按下到放下）：用来把这个键画到邻键上面。 */
+    val raised: Boolean get() = raisedState.value
+    private val jellyState = mutableStateOf(true)
+    /** 「果冻特效」开关（快照状态：设置里改了，图层立刻跟）。 */
+    var jellyOn: Boolean
+        get() = jellyState.value
+        set(value) { if (jellyState.value != value) jellyState.value = value }
     private var down = false
     private var dropping = false
     private var unit = 1f
@@ -238,66 +238,63 @@ internal class GlassKeyPress(private val density: Float) : LensMotion() {
     override fun busy() = dropping
 
     override fun afterStep() {
-        wobble(pullX, jellyX, unit)
-        wobble(pullY, jellyY, unit)
-        // _dropLift：抬满了才放下；鼓起同样等到满再用 _settleSpring 弹回。
-        if (dropping && !down && lift.value >= LIFT_SNAP && swell.value >= LIFT_SNAP) {
+        if (jellyOn) {
+            wobble(pullX, jellyX, unit)
+            wobble(pullY, jellyY, unit)
+        }
+        // _dropLift：抬满且回到原位才放下。
+        if (dropping && !down && lift.value >= LIFT_SNAP &&
+            abs(pullX.target - pullX.value) <= LIFT_RELEASE * unit && abs(pullY.target - pullY.value) <= LIFT_RELEASE * unit) {
             dropping = false
             lift.springTo(0f, LensSprings.lift)
-            swell.springTo(0f, LensSprings.settle)
         }
+        if (!down && !dropping && !lift.moving && lift.value <= .002f && raisedState.value) raisedState.value = false
     }
 
-    fun press(at: Offset, width: Float, height: Float) {
+    fun press(width: Float, height: Float) {
         down = true
         dropping = false
         unit = max(min(width, height), 1f)
-        glowAtState.value = at
+        raisedState.value = true
         lift.springTo(1f, LensSprings.lift)
-        swell.springTo(1f, LensSprings.press)
-        glowSpread.jumpTo(0f)
-        glow.springTo(1f, LensSprings.glowIn)
         wake()
     }
 
-    fun move(at: Offset, origin: Offset, width: Float, height: Float) {
-        glowAtState.value = at
+    /** 手指拖到键外的部分才拉（MainTabsLayout.updateJellyDrag 的 overshoot）。 */
+    fun move(at: Offset, width: Float, height: Float) {
+        if (!jellyOn) return
         val limit = min(width, height) * PULL_LIMIT
-        pullX.springTo(rubberBand(at.x - origin.x, limit), LensSprings.follow)
-        pullY.springTo(rubberBand(at.y - origin.y, limit), LensSprings.follow)
+        val overX = at.x - at.x.coerceIn(0f, width)
+        val overY = at.y - at.y.coerceIn(0f, height)
+        pullX.springTo(rubberBand(overX, limit), if (overX == 0f) LensSprings.press else LensSprings.track)
+        pullY.springTo(rubberBand(overY, limit), if (overY == 0f) LensSprings.press else LensSprings.track)
         wake()
     }
 
     fun release() {
         down = false
-        dropping = true
+        dropping = lift.target > 0f
         pullX.springTo(0f, LensSprings.press)
         pullY.springTo(0f, LensSprings.press)
-        glow.springTo(0f, LensSprings.glowOut)
-        glowSpread.springTo(1f, LensSprings.glowOut)
         wake()
     }
 
-    /** 玻璃强度：静止 1，抬起时加强。 */
-    fun strength(): Float = 1f + KEY_LIFT_BOOST * lift.value
-
-    fun glowStrength(): Float = GLOW_PEAK * glow.value * glow.value
-
-    fun glowReach(): Float = GLOW_REACH_DP * density * (1f + GLOW_GROWTH * glowSpread.value)
+    /** 玻璃强度（FlClashLens 的 a）：静止 [NEKO_KEY_REST]，抬起到 1。 */
+    fun glass(): Float = NEKO_KEY_REST + (1f - NEKO_KEY_REST) * lift.value.coerceIn(0f, 1f)
 
     val modifier: Modifier = Modifier
         .pointerInput(Unit) {
             awaitEachGesture {
                 // 只旁观，不消费：不影响点击、滑动和长按。
                 val first = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
-                press(first.position, size.width.toFloat(), size.height.toFloat())
+                press(size.width.toFloat(), size.height.toFloat())
                 val id = first.id
                 try {
                     while (true) {
                         val event = awaitPointerEvent(PointerEventPass.Initial)
                         val change = event.changes.firstOrNull { it.id == id } ?: break
                         if (!change.pressed) break
-                        move(change.position, first.position, size.width.toFloat(), size.height.toFloat())
+                        move(change.position, size.width.toFloat(), size.height.toFloat())
                     }
                 } finally {
                     release()
@@ -305,16 +302,26 @@ internal class GlassKeyPress(private val density: Float) : LensMotion() {
             }
         }
         .graphicsLayer {
-            val swellScale = 1f + swell.value * min(PRESS_GROWTH, MAX_GROWTH_DP * density / max(size.maxDimension, 1f))
-            val px = pullX.value
-            val py = pullY.value
+            if (!jellyOn) {
+                scaleX = 1f
+                scaleY = 1f
+                translationX = 0f
+                translationY = 0f
+                return@graphicsLayer
+            }
+            val w = max(size.width, 1f)
+            val h = max(size.height, 1f)
+            // _lensRect：抬起四周长 8dp，果冻横向拉长 (1 + j)、竖向收 max(.5, 1 - 1.4j)；竖向同理。
+            val growth = NEKO_LENS_GROWTH_DP * density * 2f * lift.value
             val jx = jellyX.value
             val jy = jellyY.value
-            // 横向拉长时竖向收 1.4 倍，竖向同理；再叠 ElasticPress 的跟手拉伸。
-            val jellyW = (1f + jx - JELLY_ASPECT * jy * .5f).coerceIn(.6f, 1.6f)
-            val jellyH = (1f + jy - JELLY_ASPECT * jx * .5f).coerceIn(.6f, 1.6f)
-            scaleX = swellScale * jellyW * (1f + abs(px) / max(size.width, 1f) * PULL_STRETCH)
-            scaleY = swellScale * jellyH * (1f + abs(py) / max(size.height, 1f) * PULL_STRETCH)
+            val jellyW = (1f + jx) * max(.5f, 1f - jy * JELLY_ASPECT)
+            val jellyH = (1f + jy) * max(.5f, 1f - jx * JELLY_ASPECT)
+            val px = pullX.value
+            val py = pullY.value
+            // _PressTransform：拉过头时沿拉的方向伸长 pull / 宽 × .5 并跟着走。
+            scaleX = (w + growth) / w * jellyW * (1f + abs(px) / w * PULL_STRETCH)
+            scaleY = (h + growth) / h * jellyH * (1f + abs(py) / h * PULL_STRETCH)
             translationX = px
             translationY = py
         }
@@ -324,16 +331,17 @@ internal class GlassKeyPress(private val density: Float) : LensMotion() {
 internal fun rememberGlassKeyPress(): GlassKeyPress {
     val density = LocalDensity.current.density
     val press = remember(density) { GlassKeyPress(density) }
+    press.jellyOn = LiquidGlass.jelly(androidx.compose.ui.platform.LocalContext.current)
     LaunchedEffect(press) { press.run() }
     return press
 }
 
 // ---------------------------------------------------------------- 工具栏透镜
 
-// 透镜抬起时四周各长 4dp（导航栏 _lensGrowth 8，工具栏只有 44dp 高，减半）；
-// 透镜下的图标随抬起放大 16%（_lensMagnify）；甩动往前看 100ms（_flingProjection）；两端可多拖 .35 格。
-private const val LENS_GROWTH_DP = 4f
-internal const val LENS_MAGNIFY = .16f
+// 11-10 第五版：透镜抬起时四周各长 8dp（_lensGrowth，Nekogram 同值），高过工具栏时竖向收回到工具栏高度
+// （MainTabsLayout 的做法）；透镜下的图标随抬起放大 16%（_lensMagnify）；甩动往前看 100ms（_flingProjection）；两端可多拖 .35 格。
+private const val LENS_GROWTH_DP = NEKO_LENS_GROWTH_DP
+internal const val LENS_MAGNIFY = NEKO_LENS_MAGNIFY
 private const val FLING_PROJECTION_S = .1f
 private const val OVERDRAG = .35f
 // 停在开启的按钮上时玻璃 .6 强度，抬起到 1。
@@ -373,8 +381,14 @@ internal class ToolbarLensMotion(private val density: Float) : LensMotion() {
 
     override fun busy() = dropping || (!settled && !down)
 
+    private val jellyState = mutableStateOf(true)
+    /** 「果冻特效」：关掉时滑块照样滑、抬起，但不长大、不拉长压扁。 */
+    var jellyOn: Boolean
+        get() = jellyState.value
+        set(value) { if (jellyState.value != value) jellyState.value = value }
+
     override fun afterStep() {
-        wobble(lens, jelly, 1f)
+        if (jellyOn) wobble(lens, jelly, 1f) else if (jelly.target != 0f) jelly.springTo(0f, LensSprings.jelly)
         dropLift()
         settleRest()
     }
@@ -506,10 +520,11 @@ internal class ToolbarLensMotion(private val density: Float) : LensMotion() {
 
     /** 透镜在内容坐标里的框（_lensRect）：抬起长大，果冻拉长压扁，竖直居中。 */
     fun rect(pitch: Float, pillWidth: Float, pillHeight: Float, height: Float): Rect {
-        val growth = LENS_GROWTH_DP * density * 2f * lift.value
-        val j = jelly.value
+        val growth = if (jellyOn) LENS_GROWTH_DP * density * 2f * lift.value else 0f
+        val j = if (jellyOn) jelly.value else 0f
         val w = (pillWidth + growth) * (1f + j)
-        val h = ((pillHeight + growth) * (1f - j * JELLY_ASPECT)).coerceAtLeast(1f)
+        // JellyGlassIndicator.getRect：竖向不低于一半；MainTabsLayout：高过容器就收回容器高度。
+        val h = ((pillHeight + growth) * max(.5f, 1f - j * JELLY_ASPECT)).coerceIn(1f, max(height, 1f))
         val cx = (lens.value + .5f) * pitch
         return Rect(cx - w / 2f, (height - h) / 2f, cx + w / 2f, (height + h) / 2f)
     }
@@ -532,6 +547,7 @@ internal class ToolbarLensMotion(private val density: Float) : LensMotion() {
 internal fun rememberToolbarLensMotion(): ToolbarLensMotion {
     val density = LocalDensity.current.density
     val motion = remember(density) { ToolbarLensMotion(density) }
+    motion.jellyOn = LiquidGlass.jelly(androidx.compose.ui.platform.LocalContext.current)
     LaunchedEffect(motion) { motion.run() }
     return motion
 }
@@ -561,27 +577,28 @@ internal fun ToolbarGlassLens(
             layout(constraints.maxWidth, constraints.maxHeight) { placeable.place(left, top) }
         }
         .onGloballyPositioned { origin.value = it.positionInRoot() }
-    // 11-09 第二版：不再走 Kyant drawBackdrop（真机上看不到滑块），和按键同一个直接画的透镜（[drawGlassLens]）。
     val source = rememberLensBackdropSource(dark, (LocalKeyboardPalette.current?.surface ?: palette.surface))
-    // 透出模式：后面是系统模糊的应用，不取样主题底片（否则滑块边上一圈不透明的渐变）。
-    val refract = !com.kingzcheung.xime.ui.keyboard.LocalKeyboardInputPreferences.current.frostedGlass.seeThrough
-    // 11-09 第四版：滑块换成 KunBox 导航栏选中指示器（LiquidGlassSelectedIndicator：selected、非强调）的晶体表面，
-    // 移植自 roseforljh/KunBox（MIT）；透镜只留折射（有底片时）和指尖光，滑动、抬起、果冻动效不变。
-    val surfaceColor = palette.surface
+    val seeThrough = com.kingzcheung.xime.ui.keyboard.LocalKeyboardInputPreferences.current.frostedGlass.seeThrough
+    // 11-10 第五版：照 Nekogram MainTabsLayout.drawJelly——静止时是强调色淡底的玻璃胶囊（NekoGlass.drawPill），
+    // 抬起时淡出，换成 FlClash 透镜（FlClashLens：抬起阴影 + neko_flclash_glass 着色器按 a = lift 取样键盘背景）。
+    // 透出模式下背景是系统模糊（读不到像素），底片用主题背景按 0x73 的不透明度（Nekogram 液态玻璃底栏的上限）。
+    val accent = LocalKeyboardPalette.current?.accent ?: palette.primary
+    val content = if (seeThrough) NEKO_SEE_THROUGH_CONTENT else 1f
     val surface = Modifier.drawWithCache {
         val cache = LensPaintCache()
-        val crystal = kunBoxCrystal(size.height / 2f, dark, KunBoxGlassRole.SELECTED, surfaceColor)
+        val r = size.height / 2f
         onDrawBehind {
-            val t = motion.strength()
-            if (t <= .001f) return@onDrawBehind
-            // 停靠时 .6、抬起到 1；透镜本身按 1 起算，抬起再加强到 1.35（和按键一样）。
-            val shown = min(t / LENS_REST_STRENGTH, 1f)
-            val optics = 1f + .35f * motion.lift.value
-            drawKunBoxCrystalUnder(crystal, alpha = shown, boost = (optics - 1f) * 1.6f)
-            drawGlassLens(source, origin.value, size.height / 2f, dark, optics, shown,
-                motion.glowAt - motion.lensTopLeft, motion.glowStrength() * min(t * 2f, 1f), motion.glowReach(),
-                Color.Transparent, cache, refract = refract, rims = 0f)
-            drawKunBoxCrystalOver(crystal, alpha = shown)
+            val shown = motion.show.value.coerceIn(0f, 1f)
+            if (shown <= .001f) return@onDrawBehind
+            val lift = motion.lift.value.coerceIn(0f, 1f)
+            if (lift < 1f) drawNekoPill(r, accent, dark, 0f, shown * (1f - lift))
+            if (lift > .004f) {
+                drawNekoLiftShadow(r, lift * shown, dark)
+                val (input, _) = cache.input(source, origin.value)
+                if (!drawNekoGlass(input, r, lift, dark, content, shown, cache.paint)) {
+                    drawNekoGlassFallback(input, r, dark, content * lift, shown, cache.paint)
+                }
+            }
         }
     }
     androidx.compose.foundation.layout.Box(modifier) {

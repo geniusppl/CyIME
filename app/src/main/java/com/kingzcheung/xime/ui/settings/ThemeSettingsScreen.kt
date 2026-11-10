@@ -170,12 +170,19 @@ private fun ThemeSettingsPage(
                         }, costItem = com.kingzcheung.xime.settings.PerformanceCosts.Item.LIQUID_GLASS)
                     if (glass.dark.enabled && com.kingzcheung.xime.ui.theme.LiquidGlass.enabled(context)) {
                         SettingsToggleItem(icon = Icons.TwoTone.AutoAwesome, title = "iOS 液态玻璃",
-                            subtitle = "键盘透出后面 App 的模糊画面（需系统开启窗口模糊，省电模式下会关闭）；上下沿高光、暗边、按下鼓起回弹，工具栏玻璃滑块" +
+                            subtitle = "Nekogram 同款玻璃：每个键都有折射、色散、上下沿高光和暗边，键盘透出后面 App 的模糊画面（需系统开启窗口模糊，省电模式下会关闭）；工具栏玻璃滑块" +
                                 com.kingzcheung.xime.BuildConfig.LEARN_BUILD.takeIf { it.isNotEmpty() }?.let { "（测试版 learn-$it）" }.orEmpty(),
                             checked = com.kingzcheung.xime.ui.theme.LiquidGlass.rich(context),
                             onCheckedChange = { enabled ->
                                 changeAppearance(context, onThemeChanged) { SettingsPreferences.setGlassLiquidRich(context, enabled) }
                             })
+                        if (com.kingzcheung.xime.ui.theme.LiquidGlass.rich(context)) {
+                            // 11-10：Nekogram 同款按压果冻（按键和工具栏玻璃滑块），关掉后按键只留玻璃质感，按下不变形。
+                            SettingsToggleItem(icon = Icons.TwoTone.AutoAwesome, title = "果冻特效",
+                                subtitle = "按键和工具栏滑块按下抬起、拖动时拉长压扁、松手回弹；关掉后只保留玻璃质感",
+                                checked = com.kingzcheung.xime.ui.theme.LiquidGlass.jelly(context),
+                                onCheckedChange = { enabled -> SettingsPreferences.setGlassJelly(context, enabled) })
+                        }
                     }
                     if (glass.dark.enabled) {
                         SettingsItem(icon = Icons.TwoTone.Opacity, title = "透明度与模糊",
