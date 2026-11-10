@@ -18,18 +18,18 @@ jobs:
           sudo rm -rf /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
           df -h /
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
           fetch-depth: 0
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v6
         with:
           distribution: 'temurin'
           java-version: '17'
           cache: 'gradle'
 
-      - uses: android-actions/setup-android@v3
+      - uses: android-actions/setup-android@v4
         with:
           packages: platform-tools
 
@@ -88,7 +88,7 @@ jobs:
         if: always()
         run: find app/build/outputs -name '*.apk' | head -20
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: CyIME-learn-arm64
@@ -105,7 +105,7 @@ jobs:
           } > "$RUNNER_TEMP/release-notes.md"
 
       - name: Publish prerelease
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: learn-${{ github.run_number }}
           name: CyIME 学英语版 测试 ${{ github.run_number }}
