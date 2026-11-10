@@ -35,6 +35,8 @@ import androidx.compose.ui.platform.LocalContext
 import com.kingzcheung.xime.ui.theme.LiquidGlass
 import com.kingzcheung.xime.ui.theme.ToolbarGlassLens
 import com.kingzcheung.xime.ui.theme.rememberToolbarLensMotion
+import com.kingzcheung.xime.ui.theme.toolbarLensTint
+import androidx.compose.ui.graphics.luminance
 
 /**
  * 工具栏玻璃透镜开着（玻璃 + 液态玻璃 + 浓郁样式）：按钮不再画按下底色和细亮边，开启的按钮只留淡淡的强调色底，
@@ -80,6 +82,10 @@ internal fun ReorderableToolbar(
     // 玻璃透镜（11-09 用户：工具栏要 FlClash 底部浮动导航栏的玻璃和切换动效）。
     val lensOn = LiquidGlass.surfacesOn() && LiquidGlass.rich(LocalContext.current)
     val lens = rememberToolbarLensMotion()
+    // _FloatingBarItem：透镜里的图标染成 colorScheme.primary（这里是工具栏的强调色）。
+    val lensTint = accent
+    val lensDark = (com.kingzcheung.xime.ui.theme.LocalKeyboardPalette.current?.surface
+        ?: androidx.compose.material3.MaterialTheme.colorScheme.surface).luminance() < .5f
     // 停靠：最近点过的按钮开着就停它上面，否则停第一个开着的（听写按钮有自己的音量光圈，不算）；
     // 都没开着时停在最近点过的那格（11-09 第二版：像 FlClash 导航栏一样滑块一直在，不再点完就消失）。
     var lastTouched by remember { mutableStateOf<String?>(null) }
@@ -163,7 +169,7 @@ internal fun ReorderableToolbar(
                         if (!change.pressed) { up = change.position; break }
                         val x = change.position.x
                         if (x < downSlot * pitch - leaveMargin || x > (downSlot + 1) * pitch + leaveMargin) left = true
-                        lens.slide(change.position, pitch, viewConfiguration.touchSlop)
+                        lens.slide(change.position, pitch)
                     }
                     if (cancelled || dragged != null) {
                         lens.cancel()
@@ -193,12 +199,9 @@ internal fun ReorderableToolbar(
                         key(id) {
                             Box(Modifier.width(slotWidth).testTag("toolbar-slot")
                                 .onGloballyPositioned { bounds[id] = Rect(it.positionInRoot(), Size(it.size.width.toFloat(), it.size.height.toFloat())) }
-                                // 透镜下的图标随抬起放大（_lensMagnify）。
-                                .then(if (lensOn) Modifier.graphicsLayer {
-                                    val scale = lens.magnify(index)
-                                    scaleX = scale
-                                    scaleY = scale
-                                } else Modifier),
+                                // 透镜下的图标：裁成透镜形状、随抬起放大、染成主色（prism_ui _LensTint）。
+                                .then(if (lensOn) Modifier.toolbarLensTint(lens, index, pitch, pillWidth, pillHeight,
+                                    lensTint, lensDark) else Modifier),
                                 contentAlignment = Alignment.Center) {
                                 content(action)
                                 // 拖动外框沿按钮胶囊描边，与按下、开启时的底色同尺寸。

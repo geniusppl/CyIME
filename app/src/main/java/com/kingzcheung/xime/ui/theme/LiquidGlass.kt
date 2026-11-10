@@ -20,6 +20,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.zIndex
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
@@ -134,43 +135,38 @@ internal fun Modifier.liquidGlassCap(cap: Modifier, radius: Dp): Modifier = comp
     }
     val rich = LiquidGlass.rich(androidx.compose.ui.platform.LocalContext.current)
     if (!rich) return@composed observed.then(liquidRefraction(radius)).then(cap).then(liquidRim(radius, dark, held))
-    // iOS 样式。11-10 第五版（用户：Nekogram 最新版的玻璃材质和果冻效果很好，每个键都要）：整套换成
-    // geniusppl/Nekogram（cb46ab29f，GPL；透镜与弹簧移植自 chen08209/prism_ui，GPL-3.0）——
-    // 键外软阴影（GlassDialogCards）+ 抬起阴影（FlClashLens.drawShadow）+ 键帽底色 +
-    // neko_flclash_glass 着色器取样键盘背景（[drawNekoGlass]，静止 a = .75、抬起到 1）+ 上部光泽（NekoGlass.drawSheen），
-    // 按压是 JellyGlassIndicator 的抬起/果冻/回弹（[GlassKeyPress]，「果冻特效」可关）。功能键同样。
+    // iOS 样式。11-10 第六版（用户：learn-28 的 Nekogram 玻璃偏色、果冻变差，要逐行照搬 FlClash）：
+    // 每个键 = prism_ui（chen08209/prism_ui，GPL-3.0）的玻璃按钮——ElasticPress 包着 LiquidGlass(LiquidGlassStyle.regular)：
+    // 底色就是 regular 的 tint（浅色 0x8AFDFDFD、深色 surfaceContainer 色调 +7 × .62），不再叠键帽原来的底色、
+    // 软阴影和光泽（原版玻璃按钮没有）；玻璃取样键盘自己的背景（按背景不透明度，透出模式下是那层淡色底，
+    // 后面是系统窗口模糊），着色器是 shaders/liquid_glass.frag 的逐行翻译（[drawPrismGlass]）。
+    // 按压是 ElasticPress + 按压光（[GlassKeyPress]，「果冻特效」开着时再加透镜的 _wobble）。功能键同样。
     val press = rememberGlassKeyPress()
     val keyPalette = LocalKeyboardPalette.current
     val source = rememberLensBackdropSource(dark, keyPalette?.surface ?: palette.surface)
     val origin = remember { mutableStateOf<Offset?>(null) }
-    // 透出模式（后面是系统模糊的应用，读不到像素）：键帽本身是一层淡白（frostedKeyColor），底片用主题背景按 0x73
-    // （Nekogram 液态玻璃底栏玻璃的不透明度上限）；不透出时按 GlassDialogCards 的填充比例透出背景
-    // （浅色 36%、深色 44%，其余是键帽底色）。字和图标后面垫一块很软的反色托底。
-    val seeThrough = com.kingzcheung.xime.ui.keyboard.LocalKeyboardInputPreferences.current.frostedGlass.seeThrough
-    val content = if (seeThrough) NEKO_SEE_THROUGH_CONTENT else nekoCardBackdropShare(dark)
-    val labelHalo = if (seeThrough) com.kingzcheung.xime.ui.keyboard.GlassTextHalo(
-        if (dark) Color.Black else Color.White, if (dark) IOS_SEE_THROUGH_HALO_DARK else IOS_SEE_THROUGH_HALO_LIGHT) else null
-    // 位置在变形之前量，按下长大、拉动时底片不跟着跑；press.modifier 的缩放包住阴影、键帽和玻璃。
+    val frosted = com.kingzcheung.xime.ui.keyboard.LocalKeyboardInputPreferences.current.frostedGlass
+    val content = frosted.backgroundOpacity.takeIf { it.isFinite() }?.coerceIn(0f, 1f) ?: 1f
+    val surfaceContainer = colors.surfaceContainer
+    val style = remember(dark, surfaceContainer) { PrismGlassStyle.regular(dark, surfaceContainer) }
+    val shape = remember(radius) { androidx.compose.foundation.shape.RoundedCornerShape(radius) }
+    // 位置在变形之前量（onGloballyPositioned 在变形外面）；鼓起、拉动时底片按屏幕位置取样（[compensateBackdrop]）。
     observed.onGloballyPositioned { origin.value = it.positionInRoot() }
         .zIndex(if (press.raised) 1f else 0f)
         .then(press.modifier)
-        .drawBehind { drawNekoLiftShadow(radius.toPx(), press.lift.value, dark) }
-        .nekoCardShadow(radius, dark)
-        .then(cap)
         .drawWithCache {
             val lens = LensPaintCache()
             val radiusPx = radius.toPx()
-            onDrawWithContent {
-                val (input, _) = lens.input(source, origin.value)
-                val a = press.glass()
-                if (!drawNekoGlass(input, radiusPx, a, dark, content, 1f, lens.paint)) {
-                    drawNekoGlassFallback(input, radiusPx, dark, content, 1f, lens.paint)
+            onDrawBehind {
+                val (input, patterned) = lens.input(source, origin.value)
+                if (patterned) compensateBackdrop(input, size.width, size.height, press.transform(size.width, size.height))
+                val glow = press.glow(size.width, size.height)
+                if (!drawPrismGlass(input, content, style, radiusPx, glow, lens.paint)) {
+                    drawPrismFrost(style, radiusPx, lens.paint)
                 }
-                drawNekoSheen(radiusPx, dark, 1f)
-                drawContent()
             }
         }
-        .then(if (labelHalo != null) Modifier.glassTextHalo(labelHalo) else Modifier)
+        .clip(shape)
 }
 
 /** 透出模式里键面字后面的软托底浓度（浅色白晕、深色黑晕）；后面本来就同色时看不出来。 */
