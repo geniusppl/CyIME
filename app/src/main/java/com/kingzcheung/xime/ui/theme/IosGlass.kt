@@ -582,7 +582,7 @@ internal fun ToolbarGlassLens(
     // 11-10 第五版：照 Nekogram MainTabsLayout.drawJelly——静止时是强调色淡底的玻璃胶囊（NekoGlass.drawPill），
     // 抬起时淡出，换成 FlClash 透镜（FlClashLens：抬起阴影 + neko_flclash_glass 着色器按 a = lift 取样键盘背景）。
     // 透出模式下背景是系统模糊（读不到像素），底片用主题背景按 0x73 的不透明度（Nekogram 液态玻璃底栏的上限）。
-    val accent = LocalKeyboardPalette.current?.accent ?: palette.primary
+    val accent = LocalKeyboardPalette.current?.accent ?: palette.accent
     val content = if (seeThrough) NEKO_SEE_THROUGH_CONTENT else 1f
     val surface = Modifier.drawWithCache {
         val cache = LensPaintCache()
