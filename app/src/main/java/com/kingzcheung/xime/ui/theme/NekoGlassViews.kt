@@ -69,14 +69,17 @@ internal fun Modifier.nekoGlassKey(radius: Dp, glassColor: Color): Modifier = co
     // - 绘制里不读动态背景的钟和位置状态（以前开着动态背景时每秒 20 次全部键重画、重录）；
     // - 抬起时画到邻键上面（zIndex）只在摆放阶段读，按下/松开不再让这个键重组。
     val graphics = LocalGraphicsContext.current
+    val context = androidx.compose.ui.platform.LocalContext.current
+    // learn-35：共用纹理上次让进程没了（或本进程出过错）就不用，退回每键缓存。
+    val useSheet = remember(context) { NekoGlassGuard.sheetAllowed(context) }
     val scoped = LocalNekoRestSheet.current
     val own = remember(graphics, scoped == null) { if (scoped == null) NekoRestSheet(graphics) else null }
     val sheet = scoped ?: own!!
     val layers = remember(graphics) { NekoKeyLayers(graphics) }
     val entry = remember { NekoRestEntry() }
-    DisposableEffect(sheet, entry) {
-        sheet.add(entry)
-        onDispose { sheet.remove(entry) }
+    DisposableEffect(sheet, entry, useSheet) {
+        if (useSheet) try { sheet.add(entry) } catch (t: Throwable) { NekoGlassGuard.sheetFailed(t) }
+        onDispose { try { sheet.remove(entry) } catch (t: Throwable) { NekoGlassGuard.failed("sheet remove", t) } }
     }
     DisposableEffect(layers, own) {
         onDispose {
@@ -84,11 +87,19 @@ internal fun Modifier.nekoGlassKey(radius: Dp, glassColor: Color): Modifier = co
             own?.release()
         }
     }
-    SideEffect { if (entry.setStyle(radiusPx, tint, dark, opacity, source)) sheet.markDirty() }
+    SideEffect {
+        try { if (entry.setStyle(radiusPx, tint, dark, opacity, source) && useSheet) sheet.markDirty() }
+        catch (t: Throwable) { NekoGlassGuard.failed("sheet style", t) }
+    }
     val shape = remember(radius) { RoundedCornerShape(radius) }
     this.onGloballyPositioned {
-            val p = it.positionInRoot()
-            sheet.place(entry, p.x, p.y, it.size.width.toFloat(), it.size.height.toFloat())
+            try {
+                val p = it.positionInRoot()
+                // 共用纹理关掉时也照样记位置（每键缓存按它取样），变了就让键重画。
+                sheet.place(entry, p.x, p.y, it.size.width.toFloat(), it.size.height.toFloat())
+            } catch (t: Throwable) {
+                NekoGlassGuard.failed("key position", t)
+            }
         }
         .layout { measurable, constraints ->
             val placeable = measurable.measure(constraints)
@@ -143,40 +154,67 @@ internal fun Modifier.nekoGlassKey(radius: Dp, glassColor: Color): Modifier = co
                     return@onDrawWithContent
                 }
                 if (!jelly.raised && !jelly.pressed) jelly.place(w / 2f, w)
-                sheet.ensure(this)
-                if (!sheet.drawKey(this, entry)) {
-                    // 还没录进共用纹理（刚登记的这一帧）：自己画一次。
-                    val input = Snapshot.withoutReadObservation { painter.cache.input(source, Offset(entry.left, entry.top)).first }
-                    drawNekoRestShadow(w, h, radiusPx, dark, painter)
-                    drawNekoRestGlass(w, h, input, opacity, radiusPx, tint, dark, painter)
+                // learn-35：静止玻璃三级退路——共用纹理 → 每键缓存（learn-32）→ 纯底色键；任何一级抛错都不让输入法崩。
+                var restDrawn = false
+                if (useSheet && !NekoGlassGuard.sheetOff) {
+                    try {
+                        NekoGlassGuard.armSheet(context)
+                        sheet.ensure(this)
+                        restDrawn = sheet.drawKey(this, entry)
+                    } catch (t: Throwable) {
+                        NekoGlassGuard.sheetFailed(t)
+                    }
+                }
+                if (!restDrawn && !NekoGlassGuard.restCacheOff) {
+                    try {
+                        val at = Offset(entry.left, entry.top)
+                        val input = Snapshot.withoutReadObservation { painter.cache.input(source, at).first }
+                        layers.drawRest(this, NekoRestKey(w, h, radiusPx, tint, dark, opacity, at, source),
+                            shadow = { drawNekoRestShadow(w, h, radiusPx, dark, painter) },
+                            glass = { drawNekoRestGlass(w, h, input, opacity, radiusPx, tint, dark, painter) })
+                        restDrawn = true
+                    } catch (t: Throwable) {
+                        NekoGlassGuard.restCacheFailed(t)
+                    }
+                }
+                if (!restDrawn) {
+                    try { drawNekoPlainKey(w, h, radiusPx, tint, dark, painter) } catch (t: Throwable) { NekoGlassGuard.failed("plain key", t) }
                 }
                 val lift = jelly.lift.coerceIn(0f, 1f)
                 if (lift <= 0.004f) {
                     drawContent()
                     return@onDrawWithContent
                 }
-                val input = Snapshot.withoutReadObservation { painter.cache.input(source, Offset(entry.left, entry.top)).first }
-                val lens = jelly.rect(h / 2f, h, growth)
-                val lensRadius = min(radiusPx + growth * lift, min(lens.width, lens.height) / 2f)
-                val lensPath = painter.lensPath(lens, lensRadius)
-                // 透镜外照常画字（跟手时透镜可能离开键帽一部分）。
-                clipPath(lensPath, clipOp = ClipOp.Difference) { this@onDrawWithContent.drawContent() }
-                drawNekoLensShadow(lens, lift, dark, painter)
-                val glass = drawNekoLensGlass(layers.lensGlass(), lens, lensRadius, lift, dark, 1f, painter) { region ->
-                    drawNekoBackdrop(input, opacity, region, painter)
-                    // 透镜底片里的静止玻璃直接贴共用纹理，不再现跑一遍 KunBox 着色器。
-                    if (!sheet.drawKey(this, entry, keyOnly = true)) {
-                        drawNekoRestGlass(w, h, input, opacity, radiusPx, tint, dark, painter)
+                var contentDrawn = false
+                try {
+                    val input = Snapshot.withoutReadObservation { painter.cache.input(source, Offset(entry.left, entry.top)).first }
+                    val lens = jelly.rect(h / 2f, h, growth)
+                    val lensRadius = min(radiusPx + growth * lift, min(lens.width, lens.height) / 2f)
+                    val lensPath = painter.lensPath(lens, lensRadius)
+                    // 透镜外照常画字（跟手时透镜可能离开键帽一部分）。
+                    clipPath(lensPath, clipOp = ClipOp.Difference) { this@onDrawWithContent.drawContent() }
+                    contentDrawn = true
+                    drawNekoLensShadow(lens, lift, dark, painter)
+                    val glass = !NekoGlassGuard.lensOff &&
+                        drawNekoLensGlass(layers.lensGlass(), lens, lensRadius, lift, dark, 1f, painter) { region ->
+                            drawNekoBackdrop(input, opacity, region, painter)
+                            // 透镜底片里的静止玻璃直接贴共用纹理，不再现跑一遍 KunBox 着色器。
+                            val pasted = useSheet && !NekoGlassGuard.sheetOff &&
+                                try { sheet.drawKey(this, entry, keyOnly = true) } catch (t: Throwable) { NekoGlassGuard.sheetFailed(t); false }
+                            if (!pasted) drawNekoRestGlass(w, h, input, opacity, radiusPx, tint, dark, painter)
+                        }
+                    if (!glass) drawNekoPill(lens, lensRadius, accent, lift, 1f, dark, painter)
+                    val cx = w / 2f
+                    val cy = h / 2f
+                    val content: androidx.compose.ui.graphics.drawscope.DrawScope.(Float) -> Unit = { magnify ->
+                        scale(magnify, magnify, Offset(cx, cy)) { this@onDrawWithContent.drawContent() }
                     }
-                }
-                if (!glass) drawNekoPill(lens, lensRadius, accent, lift, 1f, dark, painter)
-                val cx = w / 2f
-                val cy = h / 2f
-                val content: androidx.compose.ui.graphics.drawscope.DrawScope.(Float) -> Unit = { magnify ->
-                    scale(magnify, magnify, Offset(cx, cy)) { this@onDrawWithContent.drawContent() }
-                }
-                if (!glass || !drawNekoLensContent(layers.lensContent(), lens, lensRadius, lift, dark, accent, 1f, painter, content)) {
-                    drawNekoLensContentFallback(lens, lensRadius, lift, accent, 1f, content)
+                    if (!glass || !drawNekoLensContent(layers.lensContent(), lens, lensRadius, lift, dark, accent, 1f, painter, content)) {
+                        drawNekoLensContentFallback(lens, lensRadius, lift, accent, 1f, content)
+                    }
+                } catch (t: Throwable) {
+                    NekoGlassGuard.lensFailed(t)
+                    if (!contentDrawn) drawContent()
                 }
             }
         }
@@ -359,12 +397,16 @@ internal fun NekoToolbarGlass(lens: NekoToolbarLens, pillHeight: Float, accent: 
             val lift = lens.jelly.lift.coerceIn(0f, 1f)
             if (lift < 1f) drawNekoPill(rect, r, accent, 0f, (1f - lift) * shown, dark, painter)
             if (lift > 0.004f) {
-                drawNekoLensShadow(rect, lift * shown, dark, painter)
-                val input = Snapshot.withoutReadObservation { painter.cache.input(source, origin[0]).first }
-                val drawn = drawNekoLensGlass(layer, rect, r, lift, dark, shown, painter) { region ->
-                    drawNekoBackdrop(input, opacity, region, painter)
+                try {
+                    drawNekoLensShadow(rect, lift * shown, dark, painter)
+                    val input = Snapshot.withoutReadObservation { painter.cache.input(source, origin[0]).first }
+                    val drawn = !NekoGlassGuard.lensOff && drawNekoLensGlass(layer, rect, r, lift, dark, shown, painter) { region ->
+                        drawNekoBackdrop(input, opacity, region, painter)
+                    }
+                    if (!drawn) drawNekoPill(rect, r, accent, lift, shown * lift, dark, painter)
+                } catch (t: Throwable) {
+                    NekoGlassGuard.lensFailed(t)
                 }
-                if (!drawn) drawNekoPill(rect, r, accent, lift, shown * lift, dark, painter)
             }
         }
     })
@@ -403,8 +445,12 @@ internal fun Modifier.nekoToolbarLensTint(
         val content: androidx.compose.ui.graphics.drawscope.DrawScope.(Float) -> Unit = { m ->
             scale(m, m, Offset(cx, cy)) { this@drawWithContent.drawContent() }
         }
-        if (!drawNekoLensContent(layer, rect, r, lift, dark, tint, shown, painter, content)) {
-            drawNekoLensContentFallback(rect, r, lift, tint, shown, content)
+        val tinted = !NekoGlassGuard.lensOff && try {
+            drawNekoLensContent(layer, rect, r, lift, dark, tint, shown, painter, content)
+        } catch (t: Throwable) {
+            NekoGlassGuard.lensFailed(t)
+            false
         }
+        if (!tinted) drawNekoLensContentFallback(rect, r, lift, tint, shown, content)
     }
 }

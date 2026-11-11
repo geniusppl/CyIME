@@ -49,7 +49,7 @@ internal class VoiceAudioFocus(private val context: Context) {
     private var volumeLowered = -1
 
     private val audio: AudioManager? by lazy {
-        try { context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager } catch (_: Exception) { null }
+        try { context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager } catch (_: Throwable) { null }
     }
 
     init {
@@ -64,16 +64,16 @@ internal class VoiceAudioFocus(private val context: Context) {
                 audio?.setStreamVolume(AudioManager.STREAM_MUSIC, before, 0)
                 SettingsPreferences.setSttMusicVolumeBeforeVoice(context, -1)
             }
-        } catch (error: Exception) {
+        } catch (error: Throwable) {
             Log.w(TAG, "Restoring media volume failed", error)
         }
     }
 
     fun acquire(owner: Any) { synchronized(lock) {
         if (!owners.add(owner) || owners.size > 1) return
-        // 上一次没还原干净（不该发生）：先还原再压，不在压低的音量上再压一次。
-        if (volumeBefore >= 0 || mutedMusic || focusRequest != null) restore()
         try {
+            // 上一次没还原干净（不该发生）：先还原再压，不在压低的音量上再压一次。
+            if (volumeBefore >= 0 || mutedMusic || focusRequest != null) restore()
             val mode = SettingsPreferences.getSttOtherAudio(context)
             if (mode == VoiceOtherAudio.OFF) return
             val manager = audio ?: return
@@ -99,7 +99,7 @@ internal class VoiceAudioFocus(private val context: Context) {
             manager.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_MUTE, 0)
             mutedMusic = true
             Log.i(TAG, "Audio focus refused; media muted while recording")
-        } catch (error: Exception) {
+        } catch (error: Throwable) {
             Log.w(TAG, "Quieting other audio failed", error)
         }
     } }
@@ -118,7 +118,7 @@ internal class VoiceAudioFocus(private val context: Context) {
 
     fun release(owner: Any) { synchronized(lock) {
         if (!owners.remove(owner) || owners.isNotEmpty()) return
-        restore()
+        safeRestore()
     } }
 
     /**
@@ -127,13 +127,18 @@ internal class VoiceAudioFocus(private val context: Context) {
      */
     fun releaseAll() { synchronized(lock) {
         owners.clear()
-        restore()
+        safeRestore()
     } }
+
+    /** learn-35：音量/焦点的任何异常（安卓 17 勿扰、安全音量、后台限制）都不许让输入法崩。 */
+    private fun safeRestore() {
+        try { restore() } catch (error: Throwable) { Log.w(TAG, "Restoring other audio failed", error) }
+    }
 
     private fun restore() {
         val request = focusRequest
         focusRequest = null
-        if (request != null) try { audio?.abandonAudioFocusRequest(request) } catch (error: Exception) {
+        if (request != null) try { audio?.abandonAudioFocusRequest(request) } catch (error: Throwable) {
             Log.w(TAG, "Abandoning audio focus failed", error)
         }
         if (mutedMusic) {
@@ -141,7 +146,7 @@ internal class VoiceAudioFocus(private val context: Context) {
             try {
                 unmuteMusic()
                 SettingsPreferences.setSttMusicMutedByVoice(context, false)
-            } catch (error: Exception) {
+            } catch (error: Throwable) {
                 Log.w(TAG, "Restoring media volume failed", error)
             }
         }
@@ -160,13 +165,17 @@ internal class VoiceAudioFocus(private val context: Context) {
                         manager.setStreamVolume(AudioManager.STREAM_MUSIC, before, 0)
                         // 戴耳机时系统的「安全音量」会悄悄拦下不弹界面的调高：没调上去就带音量条再调一次。
                         if (manager.getStreamVolume(AudioManager.STREAM_MUSIC) < before) {
-                            manager.setStreamVolume(AudioManager.STREAM_MUSIC, before, AudioManager.FLAG_SHOW_UI)
+                            try {
+                                manager.setStreamVolume(AudioManager.STREAM_MUSIC, before, AudioManager.FLAG_SHOW_UI)
+                            } catch (error: Throwable) {
+                                Log.w(TAG, "Restoring media volume with UI failed", error)
+                            }
                         }
                         Log.i(TAG, "Media volume restored $now -> $before (lowered to $lowered)")
                     }
                 }
                 SettingsPreferences.setSttMusicVolumeBeforeVoice(context, -1)
-            } catch (error: Exception) {
+            } catch (error: Throwable) {
                 Log.w(TAG, "Restoring media volume failed", error)
             }
         }

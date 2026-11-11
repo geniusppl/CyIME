@@ -59,6 +59,10 @@ class SpeechRecognitionManager(
     @Volatile private var recordingThread: RecordingThread? = null
     // 屏蔽外放音：开麦时压低或暂停别的应用的声音，关麦恢复（本地和在线语音都从这里的录音线程取音）
     private val audioFocus by lazy { VoiceAudioFocus(context) }
+    /** learn-35：屏蔽外放音的任何调用（含第一次创建）出错都只记日志，不让输入法崩。 */
+    private fun quietly(what: String, block: () -> Unit) {
+        try { block() } catch (error: Throwable) { Log.w(TAG, "Other-audio $what failed", error) }
+    }
     @Volatile private var released = false
     @Volatile private var recognitionLanguage = InputLanguage.CHINESE
 
@@ -135,7 +139,7 @@ class SpeechRecognitionManager(
         loadingCancelled = false
         stopAfterLoad = false
         // A pending gesture may already have opened the mic. Quiet media as soon as voice is confirmed.
-        synchronized(this) { preStartedRecord?.let { audioFocus.acquire(it) } }
+        synchronized(this) { preStartedRecord?.let { quietly("acquire") { audioFocus.acquire(it) } } }
         FileLogger.i(TAG, "Starting speech recognition")
         setState(RecognitionState.PROCESSING)
 
@@ -260,7 +264,7 @@ class SpeechRecognitionManager(
             // 模型还在加载：麦克风里已经存着刚才说的话，加载完认完再结束（原来这里直接丢掉，什么都不出）
             stopAfterLoad = true
             stopRequestedAtNs = System.nanoTime()
-            audioFocus.release(pendingMic)
+            quietly("release") { audioFocus.release(pendingMic) }
             FileLogger.i(TAG, "Stop during model load: recognizing the captured audio once loaded")
             return
         }
@@ -291,7 +295,7 @@ class SpeechRecognitionManager(
         stopAfterLoad = false
         releasePreStart()
         // 取消 = 这次语音整个结束（收键盘、换输入框、销毁都走这里）：无条件还原媒体音量、放掉焦点（learn-33）。
-        audioFocus.releaseAll()
+        quietly("releaseAll") { audioFocus.releaseAll() }
         Log.d(TAG, "Canceling recognition")
         val thread = recordingThread
         if (thread == null) {
@@ -345,7 +349,7 @@ class SpeechRecognitionManager(
             synchronized(this) {
                 preStartedRecord = record
                 // The toolbar can request voice first, then open this mic while the model loads.
-                if (loadPending && !loadingCancelled && !stopAfterLoad) audioFocus.acquire(record)
+                if (loadPending && !loadingCancelled && !stopAfterLoad) quietly("acquire") { audioFocus.acquire(record) }
             }
         } catch (error: Exception) {
             try { record.release() } catch (_: Exception) { }
@@ -376,7 +380,7 @@ class SpeechRecognitionManager(
             if (record != null) {
                 try { record.stop() } catch (_: Exception) { }
                 try { record.release() } catch (_: Exception) { }
-                audioFocus.release(record)
+                quietly("release") { audioFocus.release(record) }
             }
         }
     }
@@ -385,7 +389,7 @@ class SpeechRecognitionManager(
         released = true
         Log.d(TAG, "Releasing speech recognition")
         releasePreStart()
-        audioFocus.releaseAll()
+        quietly("releaseAll") { audioFocus.releaseAll() }
         mainHandler.removeCallbacks(pendingBackendRelease)
         pendingReleaseSession = -1
         cancelRecognition()
@@ -703,7 +707,7 @@ class SpeechRecognitionManager(
                     recordingThread = null
                     // 认完/出错都到这里：没有别的录音也没有预启动的麦克风时，无条件还原媒体音量（learn-33）。
                     val micPending = synchronized(this@SpeechRecognitionManager) { preStartedRecord != null }
-                    if (!micPending && !loadPending) audioFocus.releaseAll()
+                    if (!micPending && !loadPending) quietly("releaseAll") { audioFocus.releaseAll() }
                     if (!released) {
                         if (currentState != RecognitionState.ERROR) setState(RecognitionState.IDLE)
                         scheduleBackendRelease(sessionId)
@@ -720,7 +724,7 @@ class SpeechRecognitionManager(
                 if (stopRequested) return
                 // 麦克风启动失败不能悄无声息地结束：报给用户（键盘上会显示）。
                 val started = microphone.start {
-                    if (drainBytes < 0 && !stopRequested) audioFocus.acquire(otherAudioOwner)
+                    if (drainBytes < 0 && !stopRequested) quietly("acquire") { audioFocus.acquire(otherAudioOwner) }
                 }
                 if (!started) error("麦克风没能开始录音：可能被其他应用占用，或没有录音权限")
                 FileLogger.i(TAG, "Microphone ready session=$session elapsedMs=${TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - requestedAt)}")
@@ -797,7 +801,7 @@ class SpeechRecognitionManager(
             } finally {
                 stopRequested = true
                 microphone.close()
-                audioFocus.release(otherAudioOwner)
+                quietly("release") { audioFocus.release(otherAudioOwner) }
                 captureEnded = true
                 watchShutdown()
                 if (deliveryStarted) {
@@ -816,7 +820,7 @@ class SpeechRecognitionManager(
         fun forceStopAudio() {
             stopRequested = true
             microphone.close()
-            audioFocus.release(otherAudioOwner)
+            quietly("release") { audioFocus.release(otherAudioOwner) }
             watchShutdown()
         }
 

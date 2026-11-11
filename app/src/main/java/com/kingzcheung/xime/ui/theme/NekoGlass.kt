@@ -417,7 +417,9 @@ internal object NekoLensArbiter {
 
     fun claim(jelly: NekoJelly) {
         val previous = live?.get()
-        if (previous != null && previous !== jelly) previous.snapSettle()
+        if (previous != null && previous !== jelly) {
+            try { previous.snapSettle() } catch (t: Throwable) { NekoGlassGuard.failed("lens settle", t) }
+        }
         live = java.lang.ref.WeakReference(jelly)
     }
 }
@@ -552,6 +554,17 @@ internal fun DrawScope.drawNekoRestGlass(
         p.color = tint
         drawIntoCanvas { it.nativeCanvas.drawRoundRect(0f, 0f, w, h, r, r, p) }
     }
+    drawNekoStrokes(w, h, r, dark, painter)
+}
+
+/** learn-35 最后的退路：玻璃全失败时只画纯底色键 + 描边（不用着色器、不用图层）。 */
+internal fun DrawScope.drawNekoPlainKey(w: Float, h: Float, radiusPx: Float, tint: Int, dark: Boolean, painter: NekoGlassPainter) {
+    if (w < 1f || h < 1f) return
+    val r = min(radiusPx, min(w, h) / 2f)
+    val p = painter.fill
+    p.shader = null
+    p.color = tint
+    drawIntoCanvas { it.nativeCanvas.drawRoundRect(0f, 0f, w, h, r, r, p) }
     drawNekoStrokes(w, h, r, dark, painter)
 }
 

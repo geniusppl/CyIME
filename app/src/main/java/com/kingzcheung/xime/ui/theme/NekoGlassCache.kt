@@ -116,7 +116,9 @@ internal class NekoRestSheet(private val graphics: GraphicsContext) {
         entry.top = top
         entry.w = w
         entry.h = h
-        markDirty()
+        // 一定让键重画（共用纹理关掉时 dirty 一直是 true，markDirty 不会再动版本号）。
+        dirty = true
+        version.intValue = version.intValue + 1
     }
 
     /** 脏了就把所有键的静止玻璃重录进一张图层（坐标是 Compose 根坐标减去 [originX]/[originY]）。 */
@@ -149,6 +151,7 @@ internal class NekoRestSheet(private val graphics: GraphicsContext) {
             originX = ox
             originY = oy
             val p = painter
+            for (e in list) e.recorded = false
             target.record(size = IntSize(width, height)) {
                 for (e in list) {
                     translate(e.left - ox, e.top - oy) {
@@ -189,7 +192,7 @@ internal class NekoRestSheet(private val graphics: GraphicsContext) {
 
     fun release() {
         released = true
-        layer?.let { graphics.releaseGraphicsLayer(it) }
+        try { layer?.let { graphics.releaseGraphicsLayer(it) } } catch (t: Throwable) { NekoGlassGuard.failed("release rest sheet", t) }
         layer = null
         for (e in entries) e.recorded = false
     }
@@ -235,19 +238,160 @@ internal fun rememberNekoRestSheet(): NekoRestSheet {
     return sheet
 }
 
-/** 一个键的透镜图层（按下时才建）。只在主线程用。 */
+/**
+ * learn-35 保险（用户 11-11：learn-34 安卓 17 打开键盘直接闪退，拿不到 logcat）：
+ * 玻璃绘制任何一步抛错都不许让输入法崩——出错就关掉共用纹理、退回每键一张缓存（learn-32 那条能打开的路），
+ * 再不行就画纯底色键。共用纹理第一次用之前落盘记一笔，几秒内进程没了（原生层崩溃抓不到）下次启动就不再用它，
+ * 换装新包（安装时间变了）才重新试。
+ */
+internal object NekoGlassGuard {
+    private const val TAG = "CyImeNekoGlass"
+    private const val PREFS = "cyime_neko_glass_guard"
+    private const val KEY_PENDING = "sheet_pending"
+    private const val KEY_BAD_INSTALL = "sheet_bad_install"
+    private const val SETTLE_MS = 5000L
+
+    /** 共用静止玻璃纹理是否关掉（本进程）。 */
+    @Volatile var sheetOff = false
+        private set
+    /** 透镜（离屏 + 着色器）是否关掉（本进程）。 */
+    @Volatile var lensOff = false
+        private set
+    /** 连每键缓存都失败：只画纯底色键。 */
+    @Volatile var restCacheOff = false
+        private set
+
+    private var checked = false
+    private var armed = false
+
+    private fun installStamp(context: android.content.Context): Long = try {
+        context.packageManager.getPackageInfo(context.packageName, 0).lastUpdateTime
+    } catch (_: Throwable) { 0L }
+
+    private fun prefs(context: android.content.Context): android.content.SharedPreferences? = try {
+        context.applicationContext.getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE)
+    } catch (_: Throwable) { null }
+
+    /** 组合时调：上次用共用纹理时进程没了（或这个安装包已判定不行），本进程就不用。 */
+    fun sheetAllowed(context: android.content.Context): Boolean {
+        if (sheetOff) return false
+        if (!checked) {
+            checked = true
+            try {
+                val p = prefs(context)
+                if (p != null) {
+                    val stamp = installStamp(context)
+                    if (p.getLong(KEY_BAD_INSTALL, -1L) == stamp) {
+                        sheetOff = true
+                    } else if (p.getBoolean(KEY_PENDING, false)) {
+                        p.edit().putLong(KEY_BAD_INSTALL, stamp).putBoolean(KEY_PENDING, false).commit()
+                        sheetOff = true
+                        android.util.Log.w(TAG, "Shared rest glass disabled: process died while it was in use")
+                    }
+                }
+            } catch (t: Throwable) {
+                android.util.Log.w(TAG, "Glass guard check failed", t)
+            }
+        }
+        return !sheetOff
+    }
+
+    /** 第一次真正录共用纹理之前调：落盘记一笔，几秒后没出事再抹掉。 */
+    fun armSheet(context: android.content.Context) {
+        if (armed) return
+        armed = true
+        try {
+            val p = prefs(context) ?: return
+            p.edit().putBoolean(KEY_PENDING, true).commit()
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                try { p.edit().putBoolean(KEY_PENDING, false).apply() } catch (_: Throwable) {}
+            }, SETTLE_MS)
+        } catch (t: Throwable) {
+            android.util.Log.w(TAG, "Glass guard arm failed", t)
+        }
+    }
+
+    fun sheetFailed(t: Throwable) {
+        android.util.Log.e(TAG, "Shared rest glass failed; falling back to per-key cache", t)
+        sheetOff = true
+    }
+
+    fun lensFailed(t: Throwable) {
+        android.util.Log.e(TAG, "Lens glass failed; falling back to plain pill", t)
+        lensOff = true
+    }
+
+    fun restCacheFailed(t: Throwable) {
+        android.util.Log.e(TAG, "Per-key rest glass failed; falling back to plain keys", t)
+        restCacheOff = true
+    }
+
+    fun failed(what: String, t: Throwable) {
+        android.util.Log.e(TAG, "$what failed", t)
+    }
+}
+
+/** 静止玻璃的缓存键（每键缓存那条退路用）：这些都不变，缓存的纹理就照用。 */
+internal data class NekoRestKey(
+    val w: Float, val h: Float, val radius: Float, val tint: Int, val dark: Boolean, val opacity: Float,
+    val at: Offset?, val source: LensBackdropSource,
+)
+
+/** 一个键的图层：透镜两张（按下时才建）；共用纹理关掉时退回每键一张静止玻璃缓存（learn-32）。只在主线程用。 */
 internal class NekoKeyLayers(private val graphics: GraphicsContext) {
     val painter = NekoGlassPainter()
+    private var rest: GraphicsLayer? = null
+    private var restKey: NekoRestKey? = null
     private var glass: GraphicsLayer? = null
     private var content: GraphicsLayer? = null
+    private var released = false
+
+    /** 阴影会画到键外：图层四周留这么多 dp。 */
+    private val marginDp = 6f
+
+    /** learn-32 的每键缓存：[key] 变了才重新录（[shadow] 再 [glass]，坐标是键自己的 (0, 0, w, h)），否则直接贴。 */
+    fun drawRest(scope: DrawScope, key: NekoRestKey, shadow: DrawScope.() -> Unit, glass: DrawScope.() -> Unit) {
+        with(scope) {
+            if (released) {
+                shadow()
+                glass()
+                return
+            }
+            val m = ceil(marginDp * density)
+            val layer = rest ?: graphics.createGraphicsLayer().also {
+                it.compositingStrategy = CompositingStrategy.Offscreen
+                rest = it
+            }
+            if (restKey != key) {
+                restKey = null
+                val size = IntSize(max(1, ceil(key.w + 2f * m).toInt()), max(1, ceil(key.h + 2f * m).toInt()))
+                layer.record(size = size) {
+                    translate(m, m) {
+                        shadow()
+                        glass()
+                    }
+                }
+                restKey = key
+            }
+            translate(-m, -m) { drawLayer(layer) }
+        }
+    }
 
     fun lensGlass(): GraphicsLayer = glass ?: graphics.createGraphicsLayer().also { glass = it }
 
     fun lensContent(): GraphicsLayer = content ?: graphics.createGraphicsLayer().also { content = it }
 
     fun release() {
-        glass?.let { graphics.releaseGraphicsLayer(it) }
-        content?.let { graphics.releaseGraphicsLayer(it) }
+        released = true
+        try {
+            rest?.let { graphics.releaseGraphicsLayer(it) }
+            glass?.let { graphics.releaseGraphicsLayer(it) }
+            content?.let { graphics.releaseGraphicsLayer(it) }
+        } catch (t: Throwable) {
+            NekoGlassGuard.failed("release key layers", t)
+        }
+        rest = null
+        restKey = null
         glass = null
         content = null
     }
