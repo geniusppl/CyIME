@@ -163,7 +163,7 @@ internal fun Modifier.nekoGlassKey(radius: Dp, glassColor: Color): Modifier = co
             val painter = layers.painter
             val growth = NEKO_LENS_GROWTH_DP * density
             onDrawWithContent {
-                sheet.subscribe()
+                val sheetVersion = sheet.subscribe()
                 jelly.subscribe()
                 val w = size.width
                 val h = size.height
@@ -174,6 +174,7 @@ internal fun Modifier.nekoGlassKey(radius: Dp, glassColor: Color): Modifier = co
                 if (jellyOn && !jelly.raised && !jelly.pressed) jelly.place(w / 2f, w)
                 // learn-35：静止玻璃三级退路——共用纹理 → 每键缓存（learn-32）→ 纯底色键；任何一级抛错都不让输入法崩。
                 var restDrawn = false
+                if (jellyOn) sheet.warmLens(this)
                 if (useSheet && !NekoGlassGuard.sheetOff) {
                     try {
                         NekoGlassGuard.armSheet(context)
@@ -206,7 +207,10 @@ internal fun Modifier.nekoGlassKey(radius: Dp, glassColor: Color): Modifier = co
                     return@onDrawWithContent
                 }
                 val lift = jelly.lift.coerceIn(0f, 1f)
+                val snap = layers.snapshot
                 if (lift <= 0.004f) {
+                    // 透镜落下了：放掉这次按压的底片。
+                    if (!jelly.pressed && snap.glass != null) snap.drop()
                     drawContent()
                     return@onDrawWithContent
                 }
@@ -220,6 +224,61 @@ internal fun Modifier.nekoGlassKey(radius: Dp, glassColor: Color): Modifier = co
                     clipPath(lensPath, clipOp = ClipOp.Difference) { this@onDrawWithContent.drawContent() }
                     contentDrawn = true
                     drawNekoLensShadow(lens, lift, dark, painter)
+                    val cx = w / 2f
+                    val cy = h / 2f
+                    // learn-37：一次按下只拍一次底片（背景 + 这个键的静止玻璃；放大 1.16 倍的字），之后每帧只改 uniform 直接画。
+                    // 底色/位置/尺寸/共用纹理变了（功能键按下会变色）就重拍玻璃底片；松手后落到一半重拍一次字。
+                    var snapUsed = false
+                    if (!NekoGlassGuard.lensOff && !snap.failed && !painter.lensFailed &&
+                        android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                        try {
+                            snap.begin(jelly.pressCount)
+                            val glassKey = listOf(w, h, radiusPx, tint, dark, opacity, source, entry.left, entry.top, sheetVersion, useSheet && !NekoGlassGuard.sheetOff)
+                            if (snap.glass == null || snap.glassKey != glassKey) {
+                                val region = nekoKeySnapRegion(w, h, growth, density)
+                                val regionRect = Rect(region.l.toFloat(), region.t.toFloat(), region.r.toFloat(), region.b.toFloat())
+                                snap.glass = nekoSnapshot(layers.lensGlass(), region) {
+                                    drawNekoBackdrop(input, opacity, regionRect, painter)
+                                    val pasted = useSheet && !NekoGlassGuard.sheetOff &&
+                                        try { sheet.drawKey(this, entry, keyOnly = true) } catch (t: Throwable) { NekoGlassGuard.sheetFailed(t); false }
+                                    if (!pasted) drawNekoRestGlass(w, h, input, opacity, radiusPx, tint, dark, painter)
+                                }
+                                snap.glassRegion = region
+                                snap.glassKey = glassKey
+                            }
+                            if (snap.content == null || snap.wantsContentRefresh(jelly.pressed, lift)) {
+                                val region = snap.glassRegion ?: nekoKeySnapRegion(w, h, growth, density)
+                                snap.content = nekoSnapshot(layers.lensContent(), region) {
+                                    scale(NEKO_LENS_SNAP_MAGNIFY, NEKO_LENS_SNAP_MAGNIFY, Offset(cx, cy)) {
+                                        this@onDrawWithContent.drawContent()
+                                    }
+                                }
+                                snap.contentRegion = region
+                            }
+                            snapUsed = true
+                        } catch (t: Throwable) {
+                            android.util.Log.w("CyImeNekoGlass", "lens snapshot failed; per-frame lens", t)
+                            snap.failed = true
+                            snap.drop()
+                        }
+                    }
+                    if (snapUsed) {
+                        val g = snap.glass
+                        val gr = snap.glassRegion
+                        val c = snap.content
+                        val cr = snap.contentRegion
+                        val glass = g != null && gr != null &&
+                            drawNekoLensGlassSnap(g, gr, lens, lensRadius, lift, dark, 1f, painter)
+                        if (!glass) drawNekoPill(lens, lensRadius, accent, lift, 1f, dark, painter)
+                        val tinted = glass && c != null && cr != null &&
+                            drawNekoLensContentSnap(c, cr, cx, cy, lens, lensRadius, lift, dark, accent, 1f, painter)
+                        if (!tinted) {
+                            drawNekoLensContentFallback(lens, lensRadius, lift, accent, 1f) { magnify ->
+                                scale(magnify, magnify, Offset(cx, cy)) { this@onDrawWithContent.drawContent() }
+                            }
+                        }
+                        return@onDrawWithContent
+                    }
                     val glass = !NekoGlassGuard.lensOff &&
                         drawNekoLensGlass(layers.lensGlass(), lens, lensRadius, lift, dark, 1f, painter) { region ->
                             drawNekoBackdrop(input, opacity, region, painter)
@@ -229,8 +288,6 @@ internal fun Modifier.nekoGlassKey(radius: Dp, glassColor: Color): Modifier = co
                             if (!pasted) drawNekoRestGlass(w, h, input, opacity, radiusPx, tint, dark, painter)
                         }
                     if (!glass) drawNekoPill(lens, lensRadius, accent, lift, 1f, dark, painter)
-                    val cx = w / 2f
-                    val cy = h / 2f
                     val content: androidx.compose.ui.graphics.drawscope.DrawScope.(Float) -> Unit = { magnify ->
                         scale(magnify, magnify, Offset(cx, cy)) { this@onDrawWithContent.drawContent() }
                     }
@@ -412,6 +469,7 @@ internal fun NekoToolbarGlass(lens: NekoToolbarLens, pillHeight: Float, accent: 
     val opacity = com.kingzcheung.xime.ui.keyboard.LocalKeyboardInputPreferences.current.frostedGlass.backgroundOpacity
         .takeIf { it.isFinite() }?.coerceIn(0f, 1f) ?: 1f
     val layer = rememberGraphicsLayer()
+    val snap = remember { NekoLensSnapshot() }
     Box(modifier.onGloballyPositioned { origin[0] = it.positionInRoot() }.graphicsLayer {}.drawWithCache {
         onDrawBehind {
             lens.jelly.subscribe()
@@ -421,12 +479,41 @@ internal fun NekoToolbarGlass(lens: NekoToolbarLens, pillHeight: Float, accent: 
             val r = rect.height / 2f
             val lift = lens.jelly.lift.coerceIn(0f, 1f)
             if (lift < 1f) drawNekoPill(rect, r, accent, 0f, (1f - lift) * shown, dark, painter)
+            if (lift <= 0.004f && !lens.jelly.pressed && snap.glass != null) snap.drop()
             if (lift > 0.004f) {
                 try {
                     drawNekoLensShadow(rect, lift * shown, dark, painter)
                     val input = Snapshot.withoutReadObservation { painter.cache.input(source, origin[0]).first }
-                    val drawn = !NekoGlassGuard.lensOff && drawNekoLensGlass(layer, rect, r, lift, dark, shown, painter) { region ->
-                        drawNekoBackdrop(input, opacity, region, painter)
+                    // learn-37：一次按下只拍一次整条工具栏的背景底片，之后每帧只改 uniform 直接画（不录图层、不建 RenderEffect）。
+                    var snapUsed = false
+                    var drawn = false
+                    if (!NekoGlassGuard.lensOff && !snap.failed && !painter.lensFailed &&
+                        android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                        try {
+                            snap.begin(lens.jelly.pressCount)
+                            val key = listOf(size, origin[0], source, opacity)
+                            if (snap.glass == null || snap.glassKey != key) {
+                                val region = nekoSnapRegion(size.width, size.height, 64f * density, 16f * density)
+                                val regionRect = Rect(region.l.toFloat(), region.t.toFloat(), region.r.toFloat(), region.b.toFloat())
+                                snap.glass = nekoSnapshot(layer, region) { drawNekoBackdrop(input, opacity, regionRect, painter) }
+                                snap.glassRegion = region
+                                snap.glassKey = key
+                            }
+                            snapUsed = true
+                        } catch (t: Throwable) {
+                            android.util.Log.w("CyImeNekoGlass", "toolbar lens snapshot failed; per-frame lens", t)
+                            snap.failed = true
+                            snap.drop()
+                        }
+                    }
+                    if (snapUsed) {
+                        val g = snap.glass
+                        val gr = snap.glassRegion
+                        drawn = g != null && gr != null && drawNekoLensGlassSnap(g, gr, rect, r, lift, dark, shown, painter)
+                    } else {
+                        drawn = !NekoGlassGuard.lensOff && drawNekoLensGlass(layer, rect, r, lift, dark, shown, painter) { region ->
+                            drawNekoBackdrop(input, opacity, region, painter)
+                        }
                     }
                     if (!drawn) drawNekoPill(rect, r, accent, lift, shown * lift, dark, painter)
                 } catch (t: Throwable) {
@@ -449,10 +536,12 @@ internal fun Modifier.nekoToolbarLensTint(
     val dark = nekoIsDark(LocalKeyboardPalette.current?.surface ?: palette.surface)
     val layer = rememberGraphicsLayer()
     val painter = remember { NekoGlassPainter() }
+    val snap = remember { NekoLensSnapshot() }
     drawWithContent {
         lens.jelly.subscribe()
         val shown = lens.jelly.show.coerceIn(0f, 1f)
         val lift = lens.jelly.lift.coerceIn(0f, 1f)
+        if (lift <= 0.004f && !lens.jelly.pressed && snap.content != null) snap.drop()
         if (shown <= 0.001f || lift <= 0.004f || pitch <= 0f || !lens.jelly.hasValue) {
             drawContent()
             return@drawWithContent
@@ -470,8 +559,37 @@ internal fun Modifier.nekoToolbarLensTint(
         val content: androidx.compose.ui.graphics.drawscope.DrawScope.(Float) -> Unit = { m ->
             scale(m, m, Offset(cx, cy)) { this@drawWithContent.drawContent() }
         }
+        // learn-37：这格的图标每次按下只拍一次（放大 1.16 倍），之后每帧只改 uniform 直接画；松手后落到一半重拍一次（开关图标会变）。
+        var snapUsed = false
+        if (!NekoGlassGuard.lensOff && !snap.failed && !painter.lensFailed &&
+            android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            try {
+                snap.begin(lens.jelly.pressCount)
+                val key = listOf(size)
+                if (snap.content == null || snap.glassKey != key || snap.wantsContentRefresh(lens.jelly.pressed, lift)) {
+                    val m = 0.1f * max(size.width, size.height) + 4f * density
+                    val region = nekoSnapRegion(size.width, size.height, m, m)
+                    snap.content = nekoSnapshot(layer, region) {
+                        scale(NEKO_LENS_SNAP_MAGNIFY, NEKO_LENS_SNAP_MAGNIFY, Offset(cx, cy)) { this@drawWithContent.drawContent() }
+                    }
+                    snap.contentRegion = region
+                    snap.glassKey = key
+                }
+                snapUsed = true
+            } catch (t: Throwable) {
+                android.util.Log.w("CyImeNekoGlass", "toolbar icon snapshot failed; per-frame lens", t)
+                snap.failed = true
+                snap.drop()
+            }
+        }
         val tinted = !NekoGlassGuard.lensOff && try {
-            drawNekoLensContent(layer, rect, r, lift, dark, tint, shown, painter, content)
+            if (snapUsed) {
+                val c = snap.content
+                val cr = snap.contentRegion
+                c != null && cr != null && drawNekoLensContentSnap(c, cr, cx, cy, rect, r, lift, dark, tint, shown, painter)
+            } else {
+                drawNekoLensContent(layer, rect, r, lift, dark, tint, shown, painter, content)
+            }
         } catch (t: Throwable) {
             NekoGlassGuard.lensFailed(t)
             false

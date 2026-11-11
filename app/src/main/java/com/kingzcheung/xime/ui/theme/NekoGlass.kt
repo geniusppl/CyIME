@@ -1,7 +1,10 @@
 package com.kingzcheung.xime.ui.theme
 
+import android.graphics.Bitmap
+import android.graphics.BitmapShader
 import android.graphics.LinearGradient
 import android.graphics.Paint
+import android.graphics.Picture
 import android.graphics.PorterDuff
 import android.graphics.PorterDuffColorFilter
 import android.graphics.RenderEffect
@@ -25,18 +28,22 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.asComposeRenderEffect
+import androidx.compose.ui.graphics.drawscope.CanvasDrawScope
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.layer.GraphicsLayer
 import androidx.compose.ui.graphics.layer.drawLayer
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
 import kotlinx.coroutines.channels.Channel
 import kotlin.math.abs
 import kotlin.math.ceil
@@ -278,9 +285,14 @@ internal class NekoJelly(private val density: Float) {
         frame.longValue = frame.longValue + 1
     }
 
+    /** learn-37：第几次按下（透镜底片每次按下只拍一次，按这个号认）。 */
+    var pressCount = 0L
+        private set
+
     /** prism_ui FloatingNavigationBar：按下抬起；松手时等抬满并到位后才放下（_dropLift）。 */
     fun setPressed(pressed: Boolean) {
         if (pressed) {
+            pressCount++
             NekoLensArbiter.claim(this)
             dropping = false
             liftTarget = 1f
@@ -446,6 +458,9 @@ private object NekoShaders {
     val rest: RuntimeShader? by lazy { compile(NEKO_LIQUID_GLASS_SHADER, "rest glass") }
     val lensGlass: RuntimeShader? by lazy { compile(NEKO_FLCLASH_GLASS_SHADER, "lens glass") }
     val lensContent: RuntimeShader? by lazy { compile(NEKO_FLCLASH_GLASS_SHADER, "lens content") }
+    /** learn-37：画笔着色器那条路（底片是按下时拍的一张位图），和上面 RenderEffect 那两份分开，互不改对方的 uniform。 */
+    val lensGlassPaint: RuntimeShader? by lazy { compile(NEKO_FLCLASH_GLASS_SHADER, "lens glass paint") }
+    val lensContentPaint: RuntimeShader? by lazy { compile(NEKO_FLCLASH_GLASS_SHADER, "lens content paint") }
 
     /** 键盘背景按不透明度取样（透出模式下背景本来就是半透明画的）。 */
     val fade: RuntimeShader? by lazy {
@@ -464,6 +479,8 @@ internal fun nekoPrewarmShaders() {
         NekoShaders.fade
         NekoShaders.lensGlass
         NekoShaders.lensContent
+        NekoShaders.lensGlassPaint
+        NekoShaders.lensContentPaint
     } catch (t: Throwable) {
         android.util.Log.w("CyImeNekoGlass", "shader prewarm failed", t)
     }
@@ -483,6 +500,17 @@ internal class NekoGlassPainter {
     private var rimDark = false
     var restFailed = false
     var lensFailed = false
+    /** learn-37：透镜两遍直接用画笔着色器画（每帧只改 uniform），整个生命周期就这一支笔。 */
+    val lensPaint = Paint()
+    private var tintFilter: PorterDuffColorFilter? = null
+    private var tintFilterArgb = 0
+
+    /** FlClashLens 内容那遍的 SRC_IN 染色（同一个颜色复用同一个滤镜）。 */
+    fun tintFilter(argb: Int): PorterDuffColorFilter {
+        val f = tintFilter
+        if (f != null && tintFilterArgb == argb) return f
+        return PorterDuffColorFilter(argb, PorterDuff.Mode.SRC_IN).also { tintFilter = it; tintFilterArgb = argb }
+    }
     private val rimMatrix = android.graphics.Matrix()
     private val lens = Path()
 
@@ -872,16 +900,41 @@ private fun setNekoLensUniforms(
     rimTail: Float, rimFocus: Float, rimAdded: Float, hairlineSide: Float,
 ) {
     // 纹理是 [sw]×[sh]（半分辨率）：一个纹素 = 1 / NEKO_LENS_RES 个像素。
-    val w = sw.toFloat()
-    val h = sh.toFloat()
     val texel = 1f / NEKO_LENS_RES / d
     val ox = (l - lens.left) / d
     val oy = (t - lens.top) / d
+    setNekoLensMapping(s, sw, sh, ox, oy, texel, ox, oy, texel, texel)
+    setNekoLensLook(s, lens, radiusPx, d, bevel, blur, refraction, saturation, brightness,
+        rim, rimWidth, endShade, hairline, dispersion, rimBlur, rimTail, rimFocus, rimAdded, hairlineSide)
+}
+
+/**
+ * _LiquidGlassLayer 的映射：玻璃坐标（dp，透镜左上角为原点）= uFrame.xy + fragCoord × uFrame.zw，
+ * 纹理像素 = (玻璃坐标 − uSample.xy) / uSample.zw；[aaDp] 是 uTexels.x（一个输出像素多少 dp，用于边缘抗锯齿和暗线）。
+ */
+@RequiresApi(Build.VERSION_CODES.TIRAMISU)
+private fun setNekoLensMapping(
+    s: RuntimeShader, texW: Int, texH: Int,
+    frameX: Float, frameY: Float, frameScale: Float,
+    sampleX: Float, sampleY: Float, sampleScale: Float, aaDp: Float,
+) {
+    val w = texW.toFloat()
+    val h = texH.toFloat()
     s.setFloatUniform("uSize", w, h)
-    s.setFloatUniform("uFrame", ox, oy, texel, texel)
-    s.setFloatUniform("uSample", ox, oy, texel, texel)
+    s.setFloatUniform("uFrame", frameX, frameY, frameScale, frameScale)
+    s.setFloatUniform("uSample", sampleX, sampleY, sampleScale, sampleScale)
     s.setFloatUniform("uClamp", 0.5f, 0.5f, w - 0.5f, h - 0.5f)
-    s.setFloatUniform("uTexels", texel, 0f)
+    s.setFloatUniform("uTexels", aaDp, 0f)
+}
+
+/** FlClashLens._look(style)：形状和光学（数值由调用方按 LiquidGlassStyle.lens / lensContent 传入）。 */
+@RequiresApi(Build.VERSION_CODES.TIRAMISU)
+private fun setNekoLensLook(
+    s: RuntimeShader, lens: Rect, radiusPx: Float, d: Float,
+    bevel: Float, blur: Float, refraction: Float, saturation: Float, brightness: Float,
+    rim: Float, rimWidth: Float, endShade: Float, hairline: Float, dispersion: Float, rimBlur: Float,
+    rimTail: Float, rimFocus: Float, rimAdded: Float, hairlineSide: Float,
+) {
     val rd = radiusPx / d
     s.setFloatUniform("uShape", lens.width / d, lens.height / d, bevel, blur)
     s.setFloatUniform("uCorners", rd, rd, rd, rd)
@@ -890,6 +943,240 @@ private fun setNekoLensUniforms(
     s.setFloatUniform("uLight", rim, rimWidth, endShade)
     s.setFloatUniform("uEdge", hairline, dispersion, rimBlur)
     s.setFloatUniform("uRim", rimTail, rimFocus, rimAdded, hairlineSide)
+}
+
+/** LiquidGlassStyle.lens.scale(lift)：和 [drawNekoLensGlass33] 一字不差的那组数。 */
+@RequiresApi(Build.VERSION_CODES.TIRAMISU)
+private fun setNekoLensGlassLook(s: RuntimeShader, lens: Rect, radius: Float, lift: Float, dark: Boolean, d: Float) {
+    val a = lift.coerceIn(0f, 1f)
+    setNekoLensLook(s, lens, radius, d,
+        bevel = 5.5f, blur = 0f,
+        refraction = -4.3f * a, saturation = 1f, brightness = 1f + ((if (dark) 1.33f else 1f) - 1f) * a,
+        rim = (if (dark) 0.3f else 0.6f) * a, rimWidth = 1.1f, endShade = 0.045f * a,
+        hairline = 0.42f * a, dispersion = 6.5f * a, rimBlur = 1.5f * a,
+        rimTail = 0f, rimFocus = 0f, rimAdded = 0f, hairlineSide = 0.42f * a)
+}
+
+/** LiquidGlassStyle.lensContent.scale(lift)：和 [drawNekoLensContent33] 一字不差的那组数。 */
+@RequiresApi(Build.VERSION_CODES.TIRAMISU)
+private fun setNekoLensContentLook(s: RuntimeShader, lens: Rect, radius: Float, lift: Float, dark: Boolean, d: Float) {
+    val a = lift.coerceIn(0f, 1f)
+    setNekoLensLook(s, lens, radius, d,
+        bevel = 11.2f, blur = 0f,
+        refraction = 14f * a, saturation = 1f, brightness = 1f + ((if (dark) 1.33f else 1f) - 1f) * a,
+        rim = 0f, rimWidth = 1.3f, endShade = 0f,
+        hairline = 0f, dispersion = 3.6f * a, rimBlur = 2.5f * a,
+        rimTail = 0f, rimFocus = 0f, rimAdded = 0f, hairlineSide = 0f)
+}
+
+// ---------------------------------------------------------------- learn-37：每次按下只拍一次底片
+
+/*
+ * learn-37 性能（用户 11-11 真机安卓 17：learn-36 果冻关了顺滑、开了卡）。以前按下的每一帧（按住 + 落下约 0.5–0.7 秒）
+ * 都要录两张离屏图层、各新建一个 RuntimeShader RenderEffect 再离屏合成。现在：
+ * - 按下那一帧把透镜要用的底片（键盘背景 + 这个键的静止玻璃）和放大到 1.16 倍的字/图标各录一次、各拍成一张半分辨率位图；
+ * - 之后每帧只改 uniform，用「画笔着色器 = FlClash 透镜着色器 + 位图子着色器」直接 drawRect，不录图层、不建 RenderEffect、不离屏；
+ * - 放大倍数 1 + .16 × lift 写进取样映射（uSample），所以放大过程不用重拍；染色用画笔的 SRC_IN 颜色滤镜（和以前 RenderEffect 链里同一个）。
+ * 着色器、uniform 数值、弹簧全部不变；输出像素按原来半分辨率的抗锯齿宽度（uTexels.x）算。
+ */
+
+/** 透镜在一次按压里可能到达的范围（本地像素，整数）：[NekoLensSnapshot] 按它拍。 */
+internal class NekoSnapRegion(val l: Int, val t: Int, val r: Int, val b: Int) {
+    val texW: Int get() = max(1, ceil((r - l) * NEKO_LENS_RES).toInt())
+    val texH: Int get() = max(1, ceil((b - t) * NEKO_LENS_RES).toInt())
+}
+
+/** 一个透镜（一个键、工具栏玻璃、工具栏一格）的底片。只在主线程用。 */
+internal class NekoLensSnapshot {
+    var press = -1L
+    var glassKey: Any? = null
+    var glass: BitmapShader? = null
+    var glassRegion: NekoSnapRegion? = null
+    var content: BitmapShader? = null
+    var contentRegion: NekoSnapRegion? = null
+    var contentRefreshed = false
+    /** 拍底片出过错：本组件退回 learn-36 的每帧离屏那条路。 */
+    var failed = false
+
+    /** 新的一次按下：旧底片作废（返回 true 表示换了一次按压）。 */
+    fun begin(pressId: Long): Boolean {
+        if (press == pressId) return false
+        press = pressId
+        glassKey = null
+        glass = null
+        content = null
+        contentRefreshed = false
+        return true
+    }
+
+    /** 透镜落下了：放掉位图（不 recycle，最后一帧的显示列表可能还引用着）。 */
+    fun drop() {
+        glassKey = null
+        glass = null
+        glassRegion = null
+        content = null
+        contentRegion = null
+    }
+
+    /**
+     * 松手后透镜落到一半时把字/图标重拍一次（[pressed] 是 jelly.pressed，[lift] 当前抬起量）：
+     * 松手提交后键上的字可能变（自动大写、开关图标），落下那段要跟着变，和以前每帧现录一样。
+     */
+    fun wantsContentRefresh(pressed: Boolean, lift: Float): Boolean {
+        if (pressed || contentRefreshed || lift >= 0.5f) return false
+        contentRefreshed = true
+        return content != null
+    }
+}
+
+/** 把已录好的 GraphicsLayer 渲成硬件位图（Compose LayerSnapshotV28 同样的做法，同步）。 */
+private class NekoLayerPicture(
+    private val layer: GraphicsLayer, private val w: Int, private val h: Int,
+    private val density: Density, private val layoutDirection: LayoutDirection,
+) : Picture() {
+    override fun beginRecording(width: Int, height: Int): android.graphics.Canvas = android.graphics.Canvas()
+    override fun endRecording() {}
+    override fun getWidth(): Int = w
+    override fun getHeight(): Int = h
+    override fun requiresHardwareAcceleration(): Boolean = true
+    override fun draw(canvas: android.graphics.Canvas) {
+        CanvasDrawScope().draw(density, layoutDirection, androidx.compose.ui.graphics.Canvas(canvas),
+            Size(w.toFloat(), h.toFloat())) { drawLayer(layer) }
+    }
+}
+
+/**
+ * 把 [block]（本地坐标）在 [region] 里按半分辨率录进 [layer]，再拍成一张位图，包成线性取样的 BitmapShader。
+ * 一次按压只调一两次。
+ */
+@RequiresApi(Build.VERSION_CODES.TIRAMISU)
+internal fun DrawScope.nekoSnapshot(layer: GraphicsLayer, region: NekoSnapRegion, block: DrawScope.() -> Unit): BitmapShader {
+    val sw = region.texW
+    val sh = region.texH
+    layer.record(size = IntSize(sw, sh)) {
+        scale(NEKO_LENS_RES, NEKO_LENS_RES, pivot = Offset.Zero) {
+            translate(-region.l.toFloat(), -region.t.toFloat()) { block() }
+        }
+    }
+    val bitmap = Bitmap.createBitmap(NekoLayerPicture(layer, sw, sh, this, layoutDirection))
+    return BitmapShader(bitmap, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP).apply {
+        setFilterMode(BitmapShader.FILTER_MODE_LINEAR)
+    }
+}
+
+/** 一个键在一次按压里透镜能到的范围（键本地像素）：长大 8dp、果冻拉长/压扁、横向跟手（≤ 节距 × .35），再加 14dp 取样余量。 */
+internal fun nekoKeySnapRegion(w: Float, h: Float, growthPx: Float, density: Float): NekoSnapRegion {
+    val pitch = max(48f * density, w)
+    val margin = 16f * density
+    val hx = 0.45f * pitch + 0.2f * (w + 2f * growthPx) + growthPx + margin
+    val hy = 0.25f * (h + 2f * growthPx) + growthPx + margin
+    return NekoSnapRegion(floor(-hx).toInt(), floor(-hy).toInt(), ceil(w + hx).toInt(), ceil(h + hy).toInt())
+}
+
+/** (0, 0, [w], [h]) 四周各外扩 [mx] / [my]。 */
+internal fun nekoSnapRegion(w: Float, h: Float, mx: Float, my: Float): NekoSnapRegion =
+    NekoSnapRegion(floor(-mx).toInt(), floor(-my).toInt(), ceil(w + mx).toInt(), ceil(h + my).toInt())
+
+/**
+ * FlClashLens.drawGlass 的画笔版：[snap] 是按下时拍的底片（[region] 半分辨率），每帧只写 uniform 再 drawRect。
+ * 返回 false：着色器不可用或出错（之后本进程透镜走退路）。
+ */
+internal fun DrawScope.drawNekoLensGlassSnap(
+    snap: BitmapShader, region: NekoSnapRegion, lens: Rect, radius: Float, lift: Float, dark: Boolean, alpha: Float,
+    painter: NekoGlassPainter,
+): Boolean {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU || painter.lensFailed || lift <= 0f) return false
+    return drawNekoLensSnap33(NekoShaders.lensGlassPaint, snap, region, lens, radius, lift, dark, alpha, painter,
+        k = 1f, cx = 0f, cy = 0f, tint = null)
+}
+
+/**
+ * FlClashLens.drawContent 的画笔版：[snap] 是按 1 + [NEKO_LENS_MAGNIFY] 倍、以 ([cx], [cy]) 为中心放大后拍的内容；
+ * 当前放大倍数 1 + .16 × lift 写进取样映射，SRC_IN 染成 [tint]。
+ */
+internal fun DrawScope.drawNekoLensContentSnap(
+    snap: BitmapShader, region: NekoSnapRegion, cx: Float, cy: Float, lens: Rect, radius: Float, lift: Float, dark: Boolean,
+    tint: Color, alpha: Float, painter: NekoGlassPainter,
+): Boolean {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU || painter.lensFailed || lift <= 0f) return false
+    val magnify = 1f + NEKO_LENS_MAGNIFY * lift.coerceIn(0f, 1f)
+    return drawNekoLensSnap33(NekoShaders.lensContentPaint, snap, region, lens, radius, lift, dark, alpha, painter,
+        k = NEKO_LENS_SNAP_MAGNIFY / magnify, cx = cx, cy = cy, tint = tint.copy(alpha = 1f).toArgb())
+}
+
+/** 内容底片拍的放大倍数（lift = 1 时的 1.16）。 */
+internal const val NEKO_LENS_SNAP_MAGNIFY = 1f + NEKO_LENS_MAGNIFY
+
+@RequiresApi(Build.VERSION_CODES.TIRAMISU)
+private fun DrawScope.drawNekoLensSnap33(
+    shader: RuntimeShader?, snap: BitmapShader, region: NekoSnapRegion, lens: Rect, radius: Float, lift: Float,
+    dark: Boolean, alpha: Float, painter: NekoGlassPainter, k: Float, cx: Float, cy: Float, tint: Int?,
+): Boolean {
+    shader ?: return false
+    val d = density
+    return try {
+        // 输出像素是本地像素：玻璃坐标 = (x − lens.left) / d。
+        // 纹理像素 p 对应本地 x' = region.l + p / RES；内容底片放大了 1.16 倍，当前倍数 m 处 x' = c + (x − c) × k（k = 1.16 / m）。
+        val zw = 1f / (d * k * NEKO_LENS_RES)
+        val sx = -((if (tint == null) lens.left else cx + (lens.left - cx) * k) - region.l) / (d * k)
+        val sy = -((if (tint == null) lens.top else cy + (lens.top - cy) * k) - region.t) / (d * k)
+        setNekoLensMapping(shader, region.texW, region.texH,
+            frameX = -lens.left / d, frameY = -lens.top / d, frameScale = 1f / d,
+            sampleX = sx, sampleY = sy, sampleScale = zw,
+            // 和以前半分辨率离屏一样宽的边缘抗锯齿（一个纹素）。
+            aaDp = 1f / NEKO_LENS_RES / d)
+        if (tint == null) setNekoLensGlassLook(shader, lens, radius, lift, dark, d)
+        else setNekoLensContentLook(shader, lens, radius, lift, dark, d)
+        shader.setInputShader("img", snap)
+        val p = painter.lensPaint
+        p.shader = shader
+        p.colorFilter = if (tint != null) painter.tintFilter(tint) else null
+        p.alpha = (255 * alpha.coerceIn(0f, 1f)).toInt()
+        // 着色器自己按形状抗锯齿（遮罩伸出边界不到一个纹素），外扩 3px 的矩形就够。
+        val pad = 3f
+        drawIntoCanvas { it.nativeCanvas.drawRect(lens.left - pad, lens.top - pad, lens.right + pad, lens.bottom + pad, p) }
+        p.shader = null
+        p.colorFilter = null
+        p.alpha = 255
+        true
+    } catch (e: Throwable) {
+        android.util.Log.w("CyImeNekoGlass", "lens snapshot draw failed", e)
+        painter.lensFailed = true
+        false
+    }
+}
+
+/**
+ * learn-37：键盘出来时把透镜两遍的画笔着色器（带位图子着色器、内容那遍再带 SRC_IN 滤镜）在一张 1×1 离屏图层里各画一次，
+ * GPU 管线在第一次按键之前就编好。底片是一个透明像素，画出来全透明。
+ */
+internal fun DrawScope.nekoWarmLensShaders(layer: GraphicsLayer, painter: NekoGlassPainter) {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+    nekoWarmLensShaders33(layer, painter)
+}
+
+@RequiresApi(Build.VERSION_CODES.TIRAMISU)
+private fun DrawScope.nekoWarmLensShaders33(layer: GraphicsLayer, painter: NekoGlassPainter) {
+    val wasFailed = painter.lensFailed
+    if (wasFailed) return
+    try {
+        val pixel = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
+        val snap = BitmapShader(pixel, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP).apply {
+            setFilterMode(BitmapShader.FILTER_MODE_LINEAR)
+        }
+        val region = NekoSnapRegion(0, 0, 2, 2)
+        val lens = Rect(0f, 0f, 1f, 1f)
+        layer.compositingStrategy = androidx.compose.ui.graphics.layer.CompositingStrategy.Offscreen
+        layer.record(size = IntSize(1, 1)) {
+            drawNekoLensGlassSnap(snap, region, lens, 0.5f, 1f, false, 1f, painter)
+            drawNekoLensContentSnap(snap, region, 0.5f, 0.5f, lens, 0.5f, 1f, false, Color.White, 1f, painter)
+        }
+        drawLayer(layer)
+    } catch (e: Throwable) {
+        android.util.Log.w("CyImeNekoGlass", "lens warm-up failed", e)
+    }
+    // 预热失败不算透镜失败（真按下时再判）。
+    painter.lensFailed = false
 }
 
 /** 圆角矩形路径（透镜形状）。 */

@@ -94,8 +94,23 @@ internal class NekoRestSheet(private val graphics: GraphicsContext) {
     private var originY = 0f
     private val painter = NekoGlassPainter()
     private var released = false
+    private var lensWarm = false
+    private var warmLayer: GraphicsLayer? = null
 
     fun subscribe(): Int = version.intValue
+
+    /** learn-37：这块键区第一次画时，在 1×1 离屏里把透镜的画笔着色器各画一次（GPU 管线提前编好）。 */
+    fun warmLens(scope: DrawScope) {
+        if (lensWarm || released) return
+        lensWarm = true
+        try {
+            val l = graphics.createGraphicsLayer()
+            warmLayer = l
+            scope.nekoWarmLensShaders(l, painter)
+        } catch (t: Throwable) {
+            NekoGlassGuard.failed("lens warm-up", t)
+        }
+    }
 
     fun markDirty() {
         if (!dirty) {
@@ -203,7 +218,9 @@ internal class NekoRestSheet(private val graphics: GraphicsContext) {
     fun release() {
         released = true
         try { layer?.let { graphics.releaseGraphicsLayer(it) } } catch (t: Throwable) { NekoGlassGuard.failed("release rest sheet", t) }
+        try { warmLayer?.let { graphics.releaseGraphicsLayer(it) } } catch (t: Throwable) { NekoGlassGuard.failed("release warm layer", t) }
         layer = null
+        warmLayer = null
         for (e in entries) e.recorded = false
     }
 
@@ -355,6 +372,8 @@ internal data class NekoRestKey(
 /** 一个键的图层：透镜两张（按下时才建）；共用纹理关掉时退回每键一张静止玻璃缓存（learn-32）。只在主线程用。 */
 internal class NekoKeyLayers(private val graphics: GraphicsContext) {
     val painter = NekoGlassPainter()
+    /** learn-37：透镜底片（每次按下拍一次）。 */
+    val snapshot = NekoLensSnapshot()
     private var rest: GraphicsLayer? = null
     private var restKey: NekoRestKey? = null
     private var glass: GraphicsLayer? = null
@@ -407,6 +426,7 @@ internal class NekoKeyLayers(private val graphics: GraphicsContext) {
         }
         rest = null
         restKey = null
+        snapshot.drop()
         glass = null
         content = null
     }
