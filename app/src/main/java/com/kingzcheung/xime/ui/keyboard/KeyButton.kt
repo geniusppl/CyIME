@@ -225,7 +225,7 @@ fun KeyButton(
                 pressed = isPressed, highlighted = isHighlighted,
                 opacityScale = glassFunctionKeyScale(backgroundColor),
                 functionDepth = glassFunctionKeyDepth(backgroundColor),
-            )).keyHeldHighlight(isPressed)),
+            )).keyHeldHighlight(isPressed), glassColor = backgroundColor),
         contentAlignment = Alignment.Center
     ) {
         val contentScale = keyContentScale(maxWidth.value, maxHeight.value)
@@ -600,7 +600,7 @@ fun SwipeableKeyButton(
                 pressed = isPressed || shiftHovered, highlighted = isHighlighted,
                 opacityScale = glassFunctionKeyScale(resolvedBackground),
                 functionDepth = glassFunctionKeyDepth(resolvedBackground),
-            )).keyHeldHighlight(isPressed || shiftHovered))
+            )).keyHeldHighlight(isPressed || shiftHovered), glassColor = resolvedBackground)
             .then(if (hexagonal) Modifier.honeycombLabelArea() else Modifier),
         contentAlignment = if (layoutMode == ButtonLayout.COMPACT) Alignment.TopStart else Alignment.Center
     ) {
@@ -935,7 +935,7 @@ fun IconKeyButton(
                 pressed = isPressed, highlighted = isHighlighted,
                 opacityScale = glassFunctionKeyScale(backgroundColor),
                 functionDepth = glassFunctionKeyDepth(backgroundColor),
-            )), materialLevel = com.kingzcheung.xime.ui.theme.MaterialLevel.RAISED),
+            )), materialLevel = com.kingzcheung.xime.ui.theme.MaterialLevel.RAISED, glassColor = backgroundColor),
         contentAlignment = Alignment.Center
     ) {
         Icon(
@@ -1099,7 +1099,8 @@ fun SwipeableIconKeyButton(
             .clip(keyClipShape)
             .background(feedbackColors.background)
             .keyHeldHighlight(isPressed && feedback == KeyFlickFeedback.NORMAL), materialLevel = com.kingzcheung.xime.ui.theme.MaterialLevel.RAISED,
-                glowVisibility = if (feedback == KeyFlickFeedback.NORMAL) 1f else 1f - (flickPreview?.progress ?: 0f))
+                glowVisibility = if (feedback == KeyFlickFeedback.NORMAL) 1f else 1f - (flickPreview?.progress ?: 0f),
+                glassColor = feedbackColors.background)
             .then(if (honeycombEdge != null) Modifier.honeycombLabelArea(half = true) else Modifier),
         contentAlignment = Alignment.Center
     ) {

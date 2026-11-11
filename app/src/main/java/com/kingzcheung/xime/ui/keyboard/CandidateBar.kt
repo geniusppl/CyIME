@@ -821,7 +821,7 @@ internal fun ToolbarActionButton(
         Modifier.size(if (listening) androidx.compose.ui.unit.DpSize(36.dp, 36.dp) else toolbarPillSize(maxWidth))
             .clip(CircleShape)
             .background(if (listening) Color.Transparent
-                else if (lensOn) (if (action.active) visuals.accentColor.copy(alpha = 0.20f) else Color.Transparent)
+                else if (lensOn) Color.Transparent // 开启由 Nekogram 同款滑块胶囊表示（NekoGlass.drawPill）
                 else glassActiveFill ?: visuals.glassControlBackground?.let { fill ->
                 if (action.active) androidx.compose.ui.graphics.lerp(fill, visuals.accentColor, 0.18f).copy(alpha = fill.alpha)
                 else fill.copy(alpha = fill.alpha * pressAlpha)

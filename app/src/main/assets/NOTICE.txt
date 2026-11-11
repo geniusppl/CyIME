@@ -145,13 +145,17 @@ port KunBox's liquidGlassCrystalSurface, liquidGlassPanelBrush and hollowShadow
 Nekogram / prism_ui (liquid glass lens and jelly press)
 ================================================================================
 
-Source: https://github.com/geniusppl/Nekogram (branch smart-download, commit cb46ab29f),
+Source: https://github.com/geniusppl/Nekogram (branch smart-download, commit 5f1588dd3),
 a fork of Nekogram / Telegram for Android, licensed under the GNU GPL.
 Its lens shader and springs are ported from https://github.com/chen08209/prism_ui
-(the UI kit of FlClash by chen08209), licensed under GPL-3.0, like CyIME.
+(the UI kit of FlClash by chen08209), licensed under GPL-3.0, like CyIME. Its resting
+glass optics follow https://github.com/roseforljh/KunBox (MIT, see above).
 
-The iOS liquid glass key caps and toolbar slider use Nekogram's
-res/raw/neko_flclash_glass.agsl (an AGSL port of prism_ui shaders/liquid_glass.frag),
-the FlClashLens lens parameters and shadow, the GlassDialogCards / NekoGlass card
-shadow, sheen, rim and pill, and the JellyGlassIndicator lift / jelly / press springs
-(app/src/main/java/com/kingzcheung/xime/ui/theme/NekoGlassPaint.kt and IosGlass.kt).
+The iOS liquid glass key caps (function keys included) and the toolbar slider copy the
+folder-tab bar of that build: res/raw/neko_liquid_glass_shader.agsl and
+res/raw/neko_flclash_glass.agsl verbatim (app/src/main/java/com/kingzcheung/xime/ui/theme/
+NekoGlassShaders.kt), and Kotlin ports of tw.nekomimi.nekogram.glass.JellyGlassIndicator,
+FlClashLens and NekoGlass (setOpticsUniforms, Painter, drawPill / drawSheen / drawRim,
+fillAlpha), BlurredBackgroundDrawable's strokes and shadow, BlurredBackgroundProviderImpl
+.solveSrcColor and the FilterTabsView / MainTabsLayout follow logic
+(NekoGlass.kt, NekoGlassViews.kt). Earlier ports remain in IosGlass.kt and PrismGlass.kt.

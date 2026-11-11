@@ -199,7 +199,7 @@ fun SpaceKeyButton(
             .padding(scaledKeyVisualPadding())
             .keyGlow(Modifier.then(shadow)
             .clip(RoundedCornerShape(LocalKeyCornerRadius.current))
-            .background(cancelColors?.background ?: keyFill)),
+            .background(cancelColors?.background ?: keyFill), glassColor = cancelColors?.background ?: keyFill),
         contentAlignment = Alignment.Center
     ) {
         val iconSize = keyIconSizeDp(maxWidth.value, maxHeight.value)

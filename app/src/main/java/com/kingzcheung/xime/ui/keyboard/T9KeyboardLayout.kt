@@ -1153,7 +1153,7 @@ internal fun ResetKey(
                 backgroundColor, textColor, frostedGlass,
                 legacyStateColor = if (isPressed) backgroundColor.copy(alpha = 0.7f) else backgroundColor,
                 pressed = isPressed,
-            ))), contentAlignment = Alignment.Center
+            )), glassColor = backgroundColor), contentAlignment = Alignment.Center
     ) {
         val contentScale = keyContentScale(maxWidth.value, maxHeight.value)
         // 与退格键同一套：提示字 10 号、图标基准 FunctionIconSize（紧凑模式也不另缩小）。

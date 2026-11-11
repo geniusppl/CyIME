@@ -306,7 +306,7 @@ private fun SymbolButton(
             .padding(scaledKeyVisualPadding())
             .keyGlow(Modifier.clip(RoundedCornerShape(LocalKeyCornerRadius.current))
                 .background(frostedKeyColor(backgroundColor, textColor,
-                    LocalKeyboardInputPreferences.current.frostedGlass, pressed = isPressed))),
+                    LocalKeyboardInputPreferences.current.frostedGlass, pressed = isPressed)), glassColor = backgroundColor),
         contentAlignment = Alignment.Center
     ) {
         Text(

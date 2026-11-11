@@ -1,0 +1,367 @@
+package com.kingzcheung.xime.ui.theme
+
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Stable
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.composed
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.ClipOp
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.clipPath
+import androidx.compose.ui.graphics.drawscope.scale
+import androidx.compose.ui.graphics.isSpecified
+import androidx.compose.ui.graphics.rememberGraphicsLayer
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.zIndex
+import kotlin.math.abs
+import kotlin.math.floor
+import kotlin.math.max
+import kotlin.math.min
+
+/*
+ * 把 Nekogram 顶部文件夹标签栏的玻璃（NekoGlass.kt）用到键盘上：
+ * - 每个键（含功能键）静止时是一片标签栏同款静止玻璃：取样键盘背景（按背景不透明度），底色按 .85 从键盘底色反解出
+ *   这个键自己的颜色、封顶 0x73，上下 0.4dp 描边、2.667dp 阴影；
+ * - 按下不画选中底色，直接长出 FlClash 透镜（抬起、四周各长 8dp、可超出键帽，画到邻键上面）；
+ *   拖过触摸阈值后按 rubberBand(手指 − 键中心, 节距 × .35) 跟手，松手 700ms 内用 SETTLE 弹簧回中；
+ *   透镜第二遍是这个键自己的字/图标，放大 1 + .16 × lift、染成强调色；
+ * - 「果冻特效」关：玻璃和抬起照旧，不拉长压扁、不跟手。
+ */
+
+/** 按键玻璃。[glassColor] 是键原来的底色（未指定时用键盘底色）。 */
+internal fun Modifier.nekoGlassKey(radius: Dp, glassColor: Color): Modifier = composed {
+    val colors = MaterialTheme.colorScheme
+    val palette = LocalMaterialPalette.current ?: MaterialPalette(colors.surface, colors.primary)
+    val keyPalette = LocalKeyboardPalette.current
+    val surface = keyPalette?.surface ?: palette.surface
+    val accent = keyPalette?.accent ?: palette.accent
+    val dark = nekoIsDark(surface)
+    val jelly = rememberNekoJelly()
+    val source = rememberLensBackdropSource(dark, surface)
+    val origin = remember { mutableStateOf<Offset?>(null) }
+    val frosted = com.kingzcheung.xime.ui.keyboard.LocalKeyboardInputPreferences.current.frostedGlass
+    val opacity = frosted.backgroundOpacity.takeIf { it.isFinite() }?.coerceIn(0f, 1f) ?: 1f
+    val target = if (glassColor.isSpecified) glassColor else surface
+    val tint = remember(surface, target) { nekoGlassTint(surface, target) }
+    val glassLayer = rememberGraphicsLayer()
+    val contentLayer = rememberGraphicsLayer()
+    val shape = remember(radius) { RoundedCornerShape(radius) }
+    this.onGloballyPositioned { origin.value = it.positionInRoot() }
+        .zIndex(if (jelly.raised) 1f else 0f)
+        .pointerInput(jelly) {
+            awaitEachGesture {
+                // 只旁观，不消费：不影响点击、滑动和长按。
+                val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                val w = size.width.toFloat()
+                val centre = w / 2f
+                val pitch = max(48f * density, w)
+                val slop = viewConfiguration.touchSlop
+                jelly.setPitch(pitch)
+                jelly.setTarget(centre, w, NekoJelly.MODE_TRAVEL)
+                jelly.setPressed(true)
+                var following = false
+                try {
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                        if (!change.pressed) break
+                        if (!jelly.jellyOn) continue
+                        if (!following && abs(change.position.x - down.position.x) > slop) following = true
+                        if (following) {
+                            val x = change.position.x
+                            jelly.setTarget(centre + NekoJelly.rubberBand(x - centre, pitch * NekoJelly.OVERDRAG), w,
+                                NekoJelly.MODE_FOLLOW)
+                        }
+                    }
+                } finally {
+                    if (following) jelly.endFollow()
+                    jelly.setPressed(false)
+                    jelly.setTarget(centre, w, NekoJelly.MODE_TRAVEL)
+                }
+            }
+        }
+        .drawWithCache {
+            val painter = NekoGlassPainter()
+            val radiusPx = radius.toPx()
+            val growth = NEKO_LENS_GROWTH_DP * density
+            onDrawWithContent {
+                jelly.subscribe()
+                val w = size.width
+                val h = size.height
+                if (w < 1f || h < 1f) {
+                    drawContent()
+                    return@onDrawWithContent
+                }
+                if (!jelly.raised && !jelly.pressed) jelly.place(w / 2f, w)
+                val (input, _) = painter.cache.input(source, origin.value)
+                drawNekoRestShadow(w, h, radiusPx, dark, painter)
+                drawNekoRestGlass(w, h, input, opacity, radiusPx, tint, dark, painter)
+                val lift = jelly.lift.coerceIn(0f, 1f)
+                if (lift <= 0.004f) {
+                    drawContent()
+                    return@onDrawWithContent
+                }
+                val lens = jelly.rect(h / 2f, h, growth)
+                val lensRadius = min(radiusPx + growth * lift, min(lens.width, lens.height) / 2f)
+                val lensPath = nekoLensPath(lens, lensRadius)
+                // 透镜外照常画字（跟手时透镜可能离开键帽一部分）。
+                clipPath(lensPath, clipOp = ClipOp.Difference) { this@onDrawWithContent.drawContent() }
+                drawNekoLensShadow(lens, lift, dark, painter)
+                val glass = drawNekoLensGlass(glassLayer, lens, lensRadius, lift, dark, 1f, painter) { region ->
+                    drawNekoBackdrop(input, opacity, region, painter)
+                    drawNekoRestGlass(w, h, input, opacity, radiusPx, tint, dark, painter)
+                }
+                if (!glass) drawNekoPill(lens, lensRadius, accent, lift, 1f, dark, painter)
+                val cx = w / 2f
+                val cy = h / 2f
+                val content: androidx.compose.ui.graphics.drawscope.DrawScope.(Float) -> Unit = { magnify ->
+                    scale(magnify, magnify, Offset(cx, cy)) { this@onDrawWithContent.drawContent() }
+                }
+                if (!glass || !drawNekoLensContent(contentLayer, lens, lensRadius, lift, dark, accent, 1f, painter, content)) {
+                    drawNekoLensContentFallback(lens, lensRadius, lift, accent, 1f, content)
+                }
+            }
+        }
+        .clip(shape)
+}
+
+// ---------------------------------------------------------------- 工具栏滑块
+
+/**
+ * 工具栏滑块 = FilterTabsView / MainTabsLayout 的果冻透镜：静止停在 [restIndex] 那格（NekoGlass.drawPill），
+ * 按下 TRAVEL 到按下那格并抬起；横向拖过阈值后 FOLLOW 跟手（首尾格中心之外按 rubberBand(·, 节距 × .35)），
+ * 松手 700ms 内 SETTLE。接口和原来的 ToolbarLensMotion 一样，工具栏的停靠 / lastTouched 逻辑不变。
+ */
+@Stable
+internal class NekoToolbarLens(private val density: Float) {
+    val jelly = NekoJelly(density)
+    var restIndex: () -> Int? = { null }
+    var count = 0
+    private var pitch = 0f
+    private var pillWidth = 0f
+    private var pressedIndex: Int? = null
+    private var downIndex = 0
+    private var pressX = 0f
+    private var dragging = false
+    private var down = false
+    private var pendingSync = false
+    private var pendingInitial = false
+
+    val dragged: Boolean get() = dragging
+    private val last: Int get() = max(0, count - 1)
+
+    private fun centre(index: Int) = (index + 0.5f) * pitch
+    private fun nearest(x: Float): Int = floor(x / max(pitch, 1f)).toInt().coerceIn(0, last)
+
+    /** 每次组合由工具栏告诉格宽和胶囊宽。 */
+    fun layout(pitch: Float, pillWidth: Float) {
+        if (pitch <= 0f) return
+        val changed = this.pitch != pitch || this.pillWidth != pillWidth
+        this.pitch = pitch
+        this.pillWidth = pillWidth
+        jelly.setPitch(max(48f * density, pitch))
+        if (pendingSync) applyRest(pendingInitial)
+        else if (changed && !down) applyRest(initial = true)
+    }
+
+    /** 开启的按钮或顺序变了：空闲时滑过去；第一次直接摆好。 */
+    fun syncRest(initial: Boolean) {
+        if (pitch <= 0f) {
+            pendingSync = true
+            pendingInitial = pendingInitial || initial
+            return
+        }
+        applyRest(initial)
+    }
+
+    private fun applyRest(initial: Boolean) {
+        pendingSync = false
+        pendingInitial = false
+        if (down || dragging) return
+        val rest = restIndex()?.takeIf { count > 0 && it in 0..last }
+        if (rest == null) {
+            jelly.setShow(0f)
+            return
+        }
+        if (initial || !jelly.hasValue || jelly.show < 0.05f) {
+            jelly.jumpTo(centre(rest), pillWidth)
+            if (initial) jelly.jumpShow(1f) else jelly.setShow(1f)
+            return
+        }
+        jelly.setTarget(centre(rest), pillWidth, NekoJelly.MODE_TRAVEL)
+        jelly.setShow(1f)
+    }
+
+    fun press(at: Offset, pitch: Float) {
+        if (count <= 0 || pitch <= 0f) return
+        layout(pitch, pillWidth)
+        down = true
+        dragging = false
+        val index = nearest(at.x)
+        pressedIndex = index
+        downIndex = index
+        pressX = at.x
+        if (!jelly.hasValue || jelly.show < 0.05f) jelly.jumpTo(centre(index), pillWidth)
+        jelly.setShow(1f)
+        jelly.setPressed(true)
+        jelly.setTarget(centre(index), pillWidth, NekoJelly.MODE_TRAVEL)
+    }
+
+    fun slide(at: Offset, pitch: Float) {
+        if (pressedIndex == null || pitch <= 0f || !jelly.jellyOn) return
+        if (!dragging) {
+            if (abs(at.x - pressX) < 8f * density) return
+            dragging = true
+        }
+        val lo = centre(0)
+        val hi = centre(last)
+        val p = max(48f * density, pitch)
+        val x = at.x
+        val cx = when {
+            x < lo -> lo + NekoJelly.rubberBand(x - lo, p * NekoJelly.OVERDRAG)
+            x > hi -> hi + NekoJelly.rubberBand(x - hi, p * NekoJelly.OVERDRAG)
+            else -> x
+        }
+        jelly.setTarget(cx, pillWidth, NekoJelly.MODE_FOLLOW)
+        pressedIndex = nearest(cx.coerceIn(lo, hi))
+    }
+
+    /** 松手：[commit]（拖到别的格松手）落在那格并返回它；轻点落在按下那格；拖了但不算数回停靠位。 */
+    @Suppress("UNUSED_PARAMETER")
+    fun release(commit: Boolean, velocityX: Float, pitch: Float): Int? {
+        down = false
+        val pressed = pressedIndex
+        val wasDragging = dragging
+        pressedIndex = null
+        dragging = false
+        jelly.setPressed(false)
+        if (pressed == null) return null
+        if (wasDragging) jelly.endFollow()
+        val target = when {
+            commit || !wasDragging -> pressed
+            else -> restIndex()?.takeIf { it in 0..last } ?: downIndex
+        }
+        jelly.setTarget(centre(target), pillWidth, NekoJelly.MODE_TRAVEL)
+        return if (commit) pressed else null
+    }
+
+    /** 放弃这次按压（长按换位开始）：放下并淡出。 */
+    fun cancel() {
+        pressedIndex = null
+        dragging = false
+        down = false
+        jelly.setPressed(false)
+        jelly.setShow(0f)
+    }
+
+    /** 透镜（_lensRect）：竖直居中在 [centerY]，比 [maxHeight] 高时压回（FilterTabsView）。[dx] 换到格自己的坐标。 */
+    fun rect(centerY: Float, maxHeight: Float, pillHeight: Float, dx: Float = 0f): Rect {
+        val r = jelly.rect(centerY, pillHeight, NEKO_LENS_GROWTH_DP * density, dx)
+        if (maxHeight > 0f && r.height > maxHeight) {
+            val inset = (r.height - maxHeight) / 2f
+            return Rect(r.left, r.top + inset, r.right, r.bottom - inset)
+        }
+        return r
+    }
+}
+
+@Composable
+internal fun rememberNekoToolbarLens(): NekoToolbarLens {
+    val density = LocalDensity.current.density
+    val lens = remember(density) { NekoToolbarLens(density) }
+    lens.jelly.jellyOn = LiquidGlass.jelly(androidx.compose.ui.platform.LocalContext.current)
+    androidx.compose.runtime.LaunchedEffect(lens) { lens.jelly.run() }
+    return lens
+}
+
+/**
+ * 工具栏透镜本体：铺满工具栏内容（随横向滚动一起走）。静止 = drawPill（1 − lift 淡出）；
+ * 抬起 = _lensShadows + FlClash 透镜玻璃（底片是键盘背景）。
+ */
+@Composable
+internal fun NekoToolbarGlass(lens: NekoToolbarLens, pillHeight: Float, accent: Color, modifier: Modifier = Modifier) {
+    val colors = MaterialTheme.colorScheme
+    val palette = LocalMaterialPalette.current ?: MaterialPalette(colors.surface, colors.primary)
+    val surface = LocalKeyboardPalette.current?.surface ?: palette.surface
+    val dark = nekoIsDark(surface)
+    val origin = remember { mutableStateOf<Offset?>(null) }
+    val source = rememberLensBackdropSource(dark, surface)
+    val opacity = com.kingzcheung.xime.ui.keyboard.LocalKeyboardInputPreferences.current.frostedGlass.backgroundOpacity
+        .takeIf { it.isFinite() }?.coerceIn(0f, 1f) ?: 1f
+    val layer = rememberGraphicsLayer()
+    Box(modifier.onGloballyPositioned { origin.value = it.positionInRoot() }.drawWithCache {
+        val painter = NekoGlassPainter()
+        onDrawBehind {
+            lens.jelly.subscribe()
+            val shown = lens.jelly.show.coerceIn(0f, 1f)
+            if (shown <= 0.001f || !lens.jelly.hasValue) return@onDrawBehind
+            val rect = lens.rect(size.height / 2f, size.height, pillHeight)
+            val r = rect.height / 2f
+            val lift = lens.jelly.lift.coerceIn(0f, 1f)
+            if (lift < 1f) drawNekoPill(rect, r, accent, 0f, (1f - lift) * shown, dark, painter)
+            if (lift > 0.004f) {
+                drawNekoLensShadow(rect, lift * shown, dark, painter)
+                val (input, _) = painter.cache.input(source, origin.value)
+                val drawn = drawNekoLensGlass(layer, rect, r, lift, dark, shown, painter) { region ->
+                    drawNekoBackdrop(input, opacity, region, painter)
+                }
+                if (!drawn) drawNekoPill(rect, r, accent, lift, shown * lift, dark, painter)
+            }
+        }
+    })
+}
+
+/**
+ * 第 [index] 格的图标（_LensTint）：透镜外照常画；抬起时透镜里按 1 + .16 × lift 以本格中心放大、染成 [tint]，
+ * 套 lensContent 着色器。静止时照常画（滑块只是胶囊）。
+ */
+internal fun Modifier.nekoToolbarLensTint(
+    lens: NekoToolbarLens, index: Int, pitch: Float, pillHeight: Float, tint: Color,
+): Modifier = composed {
+    val colors = MaterialTheme.colorScheme
+    val palette = LocalMaterialPalette.current ?: MaterialPalette(colors.surface, colors.primary)
+    val dark = nekoIsDark(LocalKeyboardPalette.current?.surface ?: palette.surface)
+    val layer = rememberGraphicsLayer()
+    val painter = remember { NekoGlassPainter() }
+    drawWithContent {
+        lens.jelly.subscribe()
+        val shown = lens.jelly.show.coerceIn(0f, 1f)
+        val lift = lens.jelly.lift.coerceIn(0f, 1f)
+        if (shown <= 0.001f || lift <= 0.004f || pitch <= 0f || !lens.jelly.hasValue) {
+            drawContent()
+            return@drawWithContent
+        }
+        val rect = lens.rect(size.height / 2f, size.height, pillHeight, dx = -index * pitch)
+        val magnify = 1f + NEKO_LENS_MAGNIFY * lift
+        if (!nekoLensTouches(rect, size.width, size.height, magnify)) {
+            drawContent()
+            return@drawWithContent
+        }
+        val r = rect.height / 2f
+        clipPath(nekoLensPath(rect, r), clipOp = ClipOp.Difference) { this@drawWithContent.drawContent() }
+        val cx = size.width / 2f
+        val cy = size.height / 2f
+        val content: androidx.compose.ui.graphics.drawscope.DrawScope.(Float) -> Unit = { m ->
+            scale(m, m, Offset(cx, cy)) { this@drawWithContent.drawContent() }
+        }
+        if (!drawNekoLensContent(layer, rect, r, lift, dark, tint, shown, painter, content)) {
+            drawNekoLensContentFallback(rect, r, lift, tint, shown, content)
+        }
+    }
+}

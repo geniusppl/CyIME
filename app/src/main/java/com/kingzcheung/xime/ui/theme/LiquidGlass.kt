@@ -117,7 +117,7 @@ internal object LiquidGlass {
 /**
  * 替代按键上的视觉样式材质：[cap] 是按键原来的键帽（裁剪 + 底色），亮边画在底色上面、文字下面。
  */
-internal fun Modifier.liquidGlassCap(cap: Modifier, radius: Dp): Modifier = composed {
+internal fun Modifier.liquidGlassCap(cap: Modifier, radius: Dp, glassColor: Color = Color.Unspecified): Modifier = composed {
     val colors = MaterialTheme.colorScheme
     val palette = LocalMaterialPalette.current ?: MaterialPalette(colors.surface, colors.primary)
     val dark = palette.surface.luminance() < .5f
@@ -135,38 +135,10 @@ internal fun Modifier.liquidGlassCap(cap: Modifier, radius: Dp): Modifier = comp
     }
     val rich = LiquidGlass.rich(androidx.compose.ui.platform.LocalContext.current)
     if (!rich) return@composed observed.then(liquidRefraction(radius)).then(cap).then(liquidRim(radius, dark, held))
-    // iOS 样式。11-10 第六版（用户：learn-28 的 Nekogram 玻璃偏色、果冻变差，要逐行照搬 FlClash）：
-    // 每个键 = prism_ui（chen08209/prism_ui，GPL-3.0）的玻璃按钮——ElasticPress 包着 LiquidGlass(LiquidGlassStyle.regular)：
-    // 底色就是 regular 的 tint（浅色 0x8AFDFDFD、深色 surfaceContainer 色调 +7 × .62），不再叠键帽原来的底色、
-    // 软阴影和光泽（原版玻璃按钮没有）；玻璃取样键盘自己的背景（按背景不透明度，透出模式下是那层淡色底，
-    // 后面是系统窗口模糊），着色器是 shaders/liquid_glass.frag 的逐行翻译（[drawPrismGlass]）。
-    // 按压是 ElasticPress + 按压光（[GlassKeyPress]，「果冻特效」开着时再加透镜的 _wobble）。功能键同样。
-    val press = rememberGlassKeyPress()
-    val keyPalette = LocalKeyboardPalette.current
-    val source = rememberLensBackdropSource(dark, keyPalette?.surface ?: palette.surface)
-    val origin = remember { mutableStateOf<Offset?>(null) }
-    val frosted = com.kingzcheung.xime.ui.keyboard.LocalKeyboardInputPreferences.current.frostedGlass
-    val content = frosted.backgroundOpacity.takeIf { it.isFinite() }?.coerceIn(0f, 1f) ?: 1f
-    val surfaceContainer = colors.surfaceContainer
-    val style = remember(dark, surfaceContainer) { PrismGlassStyle.regular(dark, surfaceContainer) }
-    val shape = remember(radius) { androidx.compose.foundation.shape.RoundedCornerShape(radius) }
-    // 位置在变形之前量（onGloballyPositioned 在变形外面）；鼓起、拉动时底片按屏幕位置取样（[compensateBackdrop]）。
-    observed.onGloballyPositioned { origin.value = it.positionInRoot() }
-        .zIndex(if (press.raised) 1f else 0f)
-        .then(press.modifier)
-        .drawWithCache {
-            val lens = LensPaintCache()
-            val radiusPx = radius.toPx()
-            onDrawBehind {
-                val (input, patterned) = lens.input(source, origin.value)
-                if (patterned) compensateBackdrop(input, size.width, size.height, press.transform(size.width, size.height))
-                val glow = press.glow(size.width, size.height)
-                if (!drawPrismGlass(input, content, style, radiusPx, glow, lens.paint)) {
-                    drawPrismFrost(style, radiusPx, lens.paint)
-                }
-            }
-        }
-        .clip(shape)
+    // iOS 样式。11-11 第七版（用户：每个键、功能键都要和自己那版 Nekogram 顶部文件夹标签栏的玻璃和果冻一模一样）：
+    // 静止 = 标签栏静止玻璃（KunBox 光学 + 0x73 封顶底色 + 上下描边 + 阴影），按下 = FlClash 透镜（JellyGlassIndicator 驱动），
+    // 见 NekoGlass.kt / NekoGlassViews.kt。键帽原来的底色只用来反解玻璃底色（[glassColor]）。
+    this.nekoGlassKey(radius, glassColor)
 }
 
 /** 透出模式里键面字后面的软托底浓度（浅色白晕、深色黑晕）；后面本来就同色时看不出来。 */

@@ -33,14 +33,13 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.platform.LocalContext
 import com.kingzcheung.xime.ui.theme.LiquidGlass
-import com.kingzcheung.xime.ui.theme.ToolbarGlassLens
-import com.kingzcheung.xime.ui.theme.rememberToolbarLensMotion
-import com.kingzcheung.xime.ui.theme.toolbarLensTint
-import androidx.compose.ui.graphics.luminance
+import com.kingzcheung.xime.ui.theme.NekoToolbarGlass
+import com.kingzcheung.xime.ui.theme.nekoToolbarLensTint
+import com.kingzcheung.xime.ui.theme.rememberNekoToolbarLens
 
 /**
  * 工具栏玻璃透镜开着（玻璃 + 液态玻璃 + 浓郁样式）：按钮不再画按下底色和细亮边，开启的按钮只留淡淡的强调色底，
- * 由透镜（照 FlClash 浮动导航栏，chen08209/prism_ui，GPL-3.0）表示按下、拖动和开启。
+ * 由透镜表示按下、拖动和开启（11-11 第七版：照搬 Nekogram 顶部文件夹标签栏的果冻透镜，见 NekoGlassViews.kt）。
  */
 internal val LocalToolbarLens = staticCompositionLocalOf { false }
 
@@ -81,11 +80,9 @@ internal fun ReorderableToolbar(
     }
     // 玻璃透镜（11-09 用户：工具栏要 FlClash 底部浮动导航栏的玻璃和切换动效）。
     val lensOn = LiquidGlass.surfacesOn() && LiquidGlass.rich(LocalContext.current)
-    val lens = rememberToolbarLensMotion()
-    // _FloatingBarItem：透镜里的图标染成 colorScheme.primary（这里是工具栏的强调色）。
+    val lens = rememberNekoToolbarLens()
+    // FilterTabsView：透镜里的标签染成选中色（这里是工具栏的强调色）。
     val lensTint = accent
-    val lensDark = (com.kingzcheung.xime.ui.theme.LocalKeyboardPalette.current?.surface
-        ?: androidx.compose.material3.MaterialTheme.colorScheme.surface).luminance() < .5f
     // 停靠：最近点过的按钮开着就停它上面，否则停第一个开着的（听写按钮有自己的音量光圈，不算）；
     // 都没开着时停在最近点过的那格（11-09 第二版：像 FlClash 导航栏一样滑块一直在，不再点完就消失）。
     var lastTouched by remember { mutableStateOf<String?>(null) }
@@ -142,6 +139,7 @@ internal fun ReorderableToolbar(
         val pillWidth = with(density) { pill.width.toPx() }
         val pillHeight = with(density) { pill.height.toPx() }
         val leaveMargin = with(density) { 8.dp.toPx() }
+        if (lensOn) lens.layout(pitch, pillWidth)
         // 内层 Box 的作用域里不能隐式读 BoxWithConstraints 的 maxWidth，先取出来。
         val viewport = maxWidth
         // 透镜和按钮放在同一个滚动内容里，横向滚动时一起走。
@@ -190,7 +188,7 @@ internal fun ReorderableToolbar(
                     }
                 }
             } else Modifier)) {
-            if (lensOn) ToolbarGlassLens(lens, pitch, pillWidth, pillHeight, Modifier.matchParentSize())
+            if (lensOn) NekoToolbarGlass(lens, pillHeight, lensTint, Modifier.matchParentSize())
             CompositionLocalProvider(LocalToolbarLens provides lensOn) {
                 Row(Modifier.widthIn(min = viewport),
                     horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
@@ -200,8 +198,8 @@ internal fun ReorderableToolbar(
                             Box(Modifier.width(slotWidth).testTag("toolbar-slot")
                                 .onGloballyPositioned { bounds[id] = Rect(it.positionInRoot(), Size(it.size.width.toFloat(), it.size.height.toFloat())) }
                                 // 透镜下的图标：裁成透镜形状、随抬起放大、染成主色（prism_ui _LensTint）。
-                                .then(if (lensOn) Modifier.toolbarLensTint(lens, index, pitch, pillWidth, pillHeight,
-                                    lensTint, lensDark) else Modifier),
+                                .then(if (lensOn) Modifier.nekoToolbarLensTint(lens, index, pitch, pillHeight, lensTint)
+                                    else Modifier),
                                 contentAlignment = Alignment.Center) {
                                 content(action)
                                 // 拖动外框沿按钮胶囊描边，与按下、开启时的底色同尺寸。

@@ -244,7 +244,7 @@ internal fun KanaFlickButton(
                 pressed = pressed,
                 opacityScale = glassFunctionKeyScale(background),
                 functionDepth = glassFunctionKeyDepth(background),
-            )).keyHeldHighlight(pressed)),
+            )).keyHeldHighlight(pressed), glassColor = background),
         contentAlignment = Alignment.Center,
     ) {
         val contentScale = keyContentScale(maxWidth.value, maxHeight.value)

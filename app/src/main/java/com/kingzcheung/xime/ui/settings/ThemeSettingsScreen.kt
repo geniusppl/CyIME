@@ -177,9 +177,9 @@ private fun ThemeSettingsPage(
                                 changeAppearance(context, onThemeChanged) { SettingsPreferences.setGlassLiquidRich(context, enabled) }
                             })
                         if (com.kingzcheung.xime.ui.theme.LiquidGlass.rich(context)) {
-                            // 11-10：Nekogram 同款按压果冻（按键和工具栏玻璃滑块），关掉后按键只留玻璃质感，按下不变形。
+                            // 11-11：Nekogram 顶部标签栏同款果冻（按键和工具栏玻璃滑块），关掉后只留玻璃和抬起，不拉长压扁、不跟手。
                             SettingsToggleItem(icon = Icons.TwoTone.AutoAwesome, title = "果冻特效",
-                                subtitle = "按键和工具栏滑块按下抬起、拖动时拉长压扁、松手回弹；关掉后只保留玻璃质感",
+                                subtitle = "和 Nekogram 顶部文件夹标签栏一样：按下长出玻璃透镜、拖动时跟手拉长压扁、松手回弹；关掉后保留玻璃和抬起，不变形也不跟手",
                                 checked = com.kingzcheung.xime.ui.theme.LiquidGlass.jelly(context),
                                 onCheckedChange = { enabled -> SettingsPreferences.setGlassJelly(context, enabled) })
                         }

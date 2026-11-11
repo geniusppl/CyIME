@@ -375,6 +375,7 @@ internal fun EditorActionKey(
             pressed = pressed,
             opacityScale = if (!plain) 1f else if (pressed) 0.18f else 0f,
         )),
+            glassColor = background,
             applyMaterial = !plain, // The shared disc already paints the direction sectors' material.
             particleSize = glowSize,
             particleOffset = if (plain) androidx.compose.ui.unit.DpOffset(contentOffsetX, contentOffsetY) else androidx.compose.ui.unit.DpOffset.Zero), contentAlignment = Alignment.Center) {

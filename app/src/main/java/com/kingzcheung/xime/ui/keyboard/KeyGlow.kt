@@ -48,6 +48,8 @@ internal fun Modifier.keyGlow(
     glowVisibility: Float = 1f,
     /** 液态玻璃只给有键帽的按键；表情格、编辑页的无底色键不画。 */
     liquid: Boolean = true,
+    /** 液态玻璃（iOS 样式）里键原来的底色：玻璃底色按它从键盘底色反解（Nekogram solveSrcColor）。 */
+    glassColor: Color = Color.Unspecified,
 ): Modifier = composed {
     val visibility by rememberUpdatedState(glowVisibility.coerceIn(0f, 1f))
     val preferences = LocalKeyboardInputPreferences.current
@@ -58,7 +60,7 @@ internal fun Modifier.keyGlow(
     // iOS 透镜自带按压弹簧（鼓起、跟手、回弹），原来的键帽缩放动画（先缩到 0.67）会和它打架，透镜开着时不做。
     val lensPress = liquidCap && com.kingzcheung.xime.ui.theme.LiquidGlass.rich(context)
     val paintedCap = when {
-        liquidCap -> Modifier.liquidGlassCap(cap, LocalKeyCornerRadius.current)
+        liquidCap -> Modifier.liquidGlassCap(cap, LocalKeyCornerRadius.current, glassColor)
         applyMaterial -> cap.visualMaterial(VisualStyles.current, LocalKeyCornerRadius.current, materialLevel)
         else -> cap
     }
