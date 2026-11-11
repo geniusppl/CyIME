@@ -139,9 +139,10 @@ internal class VoiceAudioFocus(private val context: Context) {
             volumeBefore = -1
             volumeLowered = -1
             try {
-                // 说话时用户自己调过音量就听用户的，不再改回去。
+                // 说话时用户自己把音量调高了就听用户的；否则一律还原。原来要求音量恰好等于压到的值，
+                // 安卓 17 上系统会把音量档位挪一格（或换了耳机/外放），对不上就一直不还原，声音被留小（用户 11-11 反馈）。
                 val manager = audio
-                if (manager != null && manager.getStreamVolume(AudioManager.STREAM_MUSIC) == lowered) {
+                if (manager != null && manager.getStreamVolume(AudioManager.STREAM_MUSIC) <= lowered + 1) {
                     manager.setStreamVolume(AudioManager.STREAM_MUSIC, before, 0)
                 }
                 SettingsPreferences.setSttMusicVolumeBeforeVoice(context, -1)
