@@ -110,6 +110,8 @@ internal fun KeyboardKeySpacingScope(
             LocalFloatingKeyCapInset provides null,
             LocalKeyboardKeyVisualMetrics provides metrics,
             LocalKeyboardKeyContentScale provides KeyboardKeyMetrics.contentScale(metrics.capShortEdge, metrics.capShortEdge),
+            // learn-33：这块键区所有键的液态玻璃静止样子共用一张纹理（见 NekoGlassCache.kt）。
+            com.kingzcheung.xime.ui.theme.LocalNekoRestSheet provides com.kingzcheung.xime.ui.theme.rememberNekoRestSheet(),
         ) {
             // 调用方声明的 horizontalInset 只作为 gutter 下限（历史参数：曾经只是公式预留）
             val gutter = metrics.gutterX

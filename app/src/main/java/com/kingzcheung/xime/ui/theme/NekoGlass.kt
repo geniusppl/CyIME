@@ -29,6 +29,8 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.graphics.drawscope.scale
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.layer.GraphicsLayer
 import androidx.compose.ui.graphics.layer.drawLayer
 import androidx.compose.ui.graphics.nativeCanvas
@@ -279,6 +281,7 @@ internal class NekoJelly(private val density: Float) {
     /** prism_ui FloatingNavigationBar：按下抬起；松手时等抬满并到位后才放下（_dropLift）。 */
     fun setPressed(pressed: Boolean) {
         if (pressed) {
+            NekoLensArbiter.claim(this)
             dropping = false
             liftTarget = 1f
             swellTarget = 1f
@@ -288,6 +291,24 @@ internal class NekoJelly(private val density: Float) {
         }
         noteRaised()
         invalidate()
+    }
+
+    /**
+     * learn-33：同一时间只留一个活的透镜。别的键（或工具栏）按下时，这个透镜的落下/回位直接到终点，
+     * 不再和新透镜一起每帧各跑两遍离屏着色器。
+     */
+    fun snapSettle() {
+        dropping = false
+        liftTarget = 0f; liftValue = 0f; vLift = 0f
+        swellTarget = 0f; swell = 0f; vSwell = 0f
+        x = targetX; vx = 0f
+        w = targetW; vw = 0f
+        jellyValue = 0f; vJelly = 0f
+        pull = pullTarget; vPull = 0f
+        if (mode == MODE_SETTLE) { mode = MODE_TRAVEL; settleUntil = 0L }
+        lastFrameNanos = 0L
+        noteRaised()
+        frame.longValue = frame.longValue + 1
     }
 
     private fun noteRaised() {
@@ -387,6 +408,17 @@ internal class NekoJelly(private val density: Float) {
         val lensH = (height + growth) * max(0.5f, 1f - s * JELLY_ASPECT)
         val cx = x + dx
         return Rect(cx - lensW / 2f, centerY - lensH / 2f, cx + lensW / 2f, centerY + lensH / 2f)
+    }
+}
+
+/** 进程里同一时间只有一个活的透镜（主线程）。 */
+internal object NekoLensArbiter {
+    private var live: java.lang.ref.WeakReference<NekoJelly>? = null
+
+    fun claim(jelly: NekoJelly) {
+        val previous = live?.get()
+        if (previous != null && previous !== jelly) previous.snapSettle()
+        live = java.lang.ref.WeakReference(jelly)
     }
 }
 
@@ -627,6 +659,8 @@ internal fun DrawScope.drawNekoPill(
 
 internal const val NEKO_LENS_MAGNIFY = 0.16f
 internal const val NEKO_LENS_GROWTH_DP = 8f
+/** learn-33：透镜两遍离屏按这个比例的分辨率画。 */
+internal const val NEKO_LENS_RES = 0.5f
 
 /** FlClashLens.drawShadow（_lensShadows）：模糊 5dp、下移 8dp，.055 × lift（深色 ×3），分 5 层手画。 */
 internal fun DrawScope.drawNekoLensShadow(lens: Rect, lift: Float, dark: Boolean, painter: NekoGlassPainter) {
@@ -687,11 +721,16 @@ private fun DrawScope.drawNekoLensGlass33(
     if (r - l <= 0 || b - t <= 0) return false
     return try {
         val region = Rect(l.toFloat(), t.toFloat(), r.toFloat(), b.toFloat())
-        layer.record(size = IntSize(r - l, b - t)) {
-            translate(-l.toFloat(), -t.toFloat()) { backdrop(region) }
+        // learn-33：半分辨率离屏（录 0.5 倍，着色器按 2 倍纹素换算，画回去放大 2 倍），像素和取样都只有四分之一。
+        val sw = max(1, ceil((r - l) * NEKO_LENS_RES).toInt())
+        val sh = max(1, ceil((b - t) * NEKO_LENS_RES).toInt())
+        layer.record(size = IntSize(sw, sh)) {
+            scale(NEKO_LENS_RES, NEKO_LENS_RES, pivot = Offset.Zero) {
+                translate(-l.toFloat(), -t.toFloat()) { backdrop(region) }
+            }
         }
         val a = lift.coerceIn(0f, 1f)
-        setNekoLensUniforms(shader, l, t, r, b, lens, radius, density,
+        setNekoLensUniforms(shader, sw, sh, l, t, lens, radius, density,
             bevel = 5.5f, blur = 0f,
             refraction = -4.3f * a, saturation = 1f, brightness = 1f + ((if (dark) 1.33f else 1f) - 1f) * a,
             rim = (if (dark) 0.3f else 0.6f) * a, rimWidth = 1.1f, endShade = 0.045f * a,
@@ -699,7 +738,9 @@ private fun DrawScope.drawNekoLensGlass33(
             rimTail = 0f, rimFocus = 0f, rimAdded = 0f, hairlineSide = 0.42f * a)
         layer.renderEffect = RenderEffect.createRuntimeShaderEffect(shader, "img").asComposeRenderEffect()
         layer.alpha = alpha.coerceIn(0f, 1f)
-        translate(l.toFloat(), t.toFloat()) { drawLayer(layer) }
+        translate(l.toFloat(), t.toFloat()) {
+            scale(1f / NEKO_LENS_RES, 1f / NEKO_LENS_RES, pivot = Offset.Zero) { drawLayer(layer) }
+        }
         true
     } catch (e: Throwable) {
         android.util.Log.w("CyImeNekoGlass", "lens glass failed", e)
@@ -736,10 +777,14 @@ private fun DrawScope.drawNekoLensContent33(
     return try {
         val a = lift.coerceIn(0f, 1f)
         val magnify = 1f + NEKO_LENS_MAGNIFY * a
-        layer.record(size = IntSize(r - l, b - t)) {
-            translate(-l.toFloat(), -t.toFloat()) { content(magnify) }
+        val sw = max(1, ceil((r - l) * NEKO_LENS_RES).toInt())
+        val sh = max(1, ceil((b - t) * NEKO_LENS_RES).toInt())
+        layer.record(size = IntSize(sw, sh)) {
+            scale(NEKO_LENS_RES, NEKO_LENS_RES, pivot = Offset.Zero) {
+                translate(-l.toFloat(), -t.toFloat()) { content(magnify) }
+            }
         }
-        setNekoLensUniforms(shader, l, t, r, b, lens, radius, density,
+        setNekoLensUniforms(shader, sw, sh, l, t, lens, radius, density,
             bevel = 11.2f, blur = 0f,
             refraction = 14f * a, saturation = 1f, brightness = 1f + ((if (dark) 1.33f else 1f) - 1f) * a,
             rim = 0f, rimWidth = 1.3f, endShade = 0f,
@@ -750,7 +795,9 @@ private fun DrawScope.drawNekoLensContent33(
         layer.renderEffect = RenderEffect.createChainEffect(
             RenderEffect.createRuntimeShaderEffect(shader, "img"), tinted).asComposeRenderEffect()
         layer.alpha = alpha.coerceIn(0f, 1f)
-        translate(l.toFloat(), t.toFloat()) { drawLayer(layer) }
+        translate(l.toFloat(), t.toFloat()) {
+            scale(1f / NEKO_LENS_RES, 1f / NEKO_LENS_RES, pivot = Offset.Zero) { drawLayer(layer) }
+        }
         true
     } catch (e: Throwable) {
         android.util.Log.w("CyImeNekoGlass", "lens content failed", e)
@@ -780,20 +827,22 @@ internal fun DrawScope.drawNekoLensContentFallback(
 /** FlClashLens.setUniforms：_LiquidGlassLayer 写的纹理尺寸和映射，再写 _look(style)；样式长度单位 dp。 */
 @RequiresApi(Build.VERSION_CODES.TIRAMISU)
 private fun setNekoLensUniforms(
-    s: RuntimeShader, l: Int, t: Int, r: Int, b: Int, lens: Rect, radiusPx: Float, d: Float,
+    s: RuntimeShader, sw: Int, sh: Int, l: Int, t: Int, lens: Rect, radiusPx: Float, d: Float,
     bevel: Float, blur: Float, refraction: Float, saturation: Float, brightness: Float,
     rim: Float, rimWidth: Float, endShade: Float, hairline: Float, dispersion: Float, rimBlur: Float,
     rimTail: Float, rimFocus: Float, rimAdded: Float, hairlineSide: Float,
 ) {
-    val w = (r - l).toFloat()
-    val h = (b - t).toFloat()
+    // 纹理是 [sw]×[sh]（半分辨率）：一个纹素 = 1 / NEKO_LENS_RES 个像素。
+    val w = sw.toFloat()
+    val h = sh.toFloat()
+    val texel = 1f / NEKO_LENS_RES / d
     val ox = (l - lens.left) / d
     val oy = (t - lens.top) / d
     s.setFloatUniform("uSize", w, h)
-    s.setFloatUniform("uFrame", ox, oy, 1f / d, 1f / d)
-    s.setFloatUniform("uSample", ox, oy, 1f / d, 1f / d)
+    s.setFloatUniform("uFrame", ox, oy, texel, texel)
+    s.setFloatUniform("uSample", ox, oy, texel, texel)
     s.setFloatUniform("uClamp", 0.5f, 0.5f, w - 0.5f, h - 0.5f)
-    s.setFloatUniform("uTexels", 1f / d, 0f)
+    s.setFloatUniform("uTexels", texel, 0f)
     val rd = radiusPx / d
     s.setFloatUniform("uShape", lens.width / d, lens.height / d, bevel, blur)
     s.setFloatUniform("uCorners", rd, rd, rd, rd)

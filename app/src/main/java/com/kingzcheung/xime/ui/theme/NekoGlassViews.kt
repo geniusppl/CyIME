@@ -7,6 +7,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -26,12 +28,12 @@ import androidx.compose.ui.graphics.isSpecified
 import androidx.compose.ui.graphics.rememberGraphicsLayer
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalGraphicsContext
 import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.zIndex
 import kotlin.math.abs
 import kotlin.math.floor
 import kotlin.math.max
@@ -54,22 +56,47 @@ internal fun Modifier.nekoGlassKey(radius: Dp, glassColor: Color): Modifier = co
     val keyPalette = LocalKeyboardPalette.current
     val surface = keyPalette?.surface ?: palette.surface
     val accent = keyPalette?.accent ?: palette.accent
-    val dark = nekoIsDark(surface)
+    val dark = remember(surface) { nekoIsDark(surface) }
     val jelly = rememberNekoJelly()
     val source = rememberLensBackdropSource(dark, surface)
-    val origin = remember { mutableStateOf<Offset?>(null) }
     val frosted = com.kingzcheung.xime.ui.keyboard.LocalKeyboardInputPreferences.current.frostedGlass
     val opacity = frosted.backgroundOpacity.takeIf { it.isFinite() }?.coerceIn(0f, 1f) ?: 1f
     val target = if (glassColor.isSpecified) glassColor else surface
     val tint = remember(surface, target) { nekoGlassTint(surface, target) }
-    // 性能（learn-32，用户 11-11 真机「卡顿的没法用」）：静止玻璃和阴影只录一次进离屏图层（GPU 缓存成纹理），
-    // 之后每帧只贴图；透镜的两个图层按下时才建。每个键自己一层 graphicsLayer，一个键动画只重画它自己。
+    val radiusPx = with(LocalDensity.current) { radius.toPx() }
+    // 性能（learn-33，用户 11-11 真机：learn-32「还是太卡了」，果冻关了也卡）：
+    // - 静止玻璃整块键区只录一张纹理（NekoRestSheet），每个键只贴自己那一格，不跑着色器、不再一键一张离屏图层；
+    // - 绘制里不读动态背景的钟和位置状态（以前开着动态背景时每秒 20 次全部键重画、重录）；
+    // - 抬起时画到邻键上面（zIndex）只在摆放阶段读，按下/松开不再让这个键重组。
     val graphics = LocalGraphicsContext.current
+    val scoped = LocalNekoRestSheet.current
+    val own = remember(graphics, scoped == null) { if (scoped == null) NekoRestSheet(graphics) else null }
+    val sheet = scoped ?: own!!
     val layers = remember(graphics) { NekoKeyLayers(graphics) }
-    DisposableEffect(layers) { onDispose { layers.release() } }
+    val entry = remember { NekoRestEntry() }
+    DisposableEffect(sheet, entry) {
+        sheet.add(entry)
+        onDispose { sheet.remove(entry) }
+    }
+    DisposableEffect(layers, own) {
+        onDispose {
+            layers.release()
+            own?.release()
+        }
+    }
+    SideEffect { if (entry.setStyle(radiusPx, tint, dark, opacity, source)) sheet.markDirty() }
     val shape = remember(radius) { RoundedCornerShape(radius) }
-    this.onGloballyPositioned { origin.value = it.positionInRoot() }
-        .zIndex(if (jelly.raised) 1f else 0f)
+    this.onGloballyPositioned {
+            val p = it.positionInRoot()
+            sheet.place(entry, p.x, p.y, it.size.width.toFloat(), it.size.height.toFloat())
+        }
+        .layout { measurable, constraints ->
+            val placeable = measurable.measure(constraints)
+            layout(placeable.width, placeable.height) {
+                // 只在摆放阶段读：抬起/放下只重新摆这个键，不重组。
+                placeable.place(0, 0, zIndex = if (jelly.raised) 1f else 0f)
+            }
+        }
         .pointerInput(jelly) {
             awaitEachGesture {
                 // 只旁观，不消费：不影响点击、滑动和长按。
@@ -105,9 +132,9 @@ internal fun Modifier.nekoGlassKey(radius: Dp, glassColor: Color): Modifier = co
         .graphicsLayer {}
         .drawWithCache {
             val painter = layers.painter
-            val radiusPx = radius.toPx()
             val growth = NEKO_LENS_GROWTH_DP * density
             onDrawWithContent {
+                sheet.subscribe()
                 jelly.subscribe()
                 val w = size.width
                 val h = size.height
@@ -116,16 +143,19 @@ internal fun Modifier.nekoGlassKey(radius: Dp, glassColor: Color): Modifier = co
                     return@onDrawWithContent
                 }
                 if (!jelly.raised && !jelly.pressed) jelly.place(w / 2f, w)
-                val at = origin.value
-                val (input, _) = painter.cache.input(source, at)
-                layers.drawRest(this, nekoRestKey(w, h, radiusPx, tint, dark, opacity, at, source),
-                    shadow = { drawNekoRestShadow(w, h, radiusPx, dark, painter) },
-                    glass = { drawNekoRestGlass(w, h, input, opacity, radiusPx, tint, dark, painter) })
+                sheet.ensure(this)
+                if (!sheet.drawKey(this, entry)) {
+                    // 还没录进共用纹理（刚登记的这一帧）：自己画一次。
+                    val input = Snapshot.withoutReadObservation { painter.cache.input(source, Offset(entry.left, entry.top)).first }
+                    drawNekoRestShadow(w, h, radiusPx, dark, painter)
+                    drawNekoRestGlass(w, h, input, opacity, radiusPx, tint, dark, painter)
+                }
                 val lift = jelly.lift.coerceIn(0f, 1f)
                 if (lift <= 0.004f) {
                     drawContent()
                     return@onDrawWithContent
                 }
+                val input = Snapshot.withoutReadObservation { painter.cache.input(source, Offset(entry.left, entry.top)).first }
                 val lens = jelly.rect(h / 2f, h, growth)
                 val lensRadius = min(radiusPx + growth * lift, min(lens.width, lens.height) / 2f)
                 val lensPath = painter.lensPath(lens, lensRadius)
@@ -134,7 +164,10 @@ internal fun Modifier.nekoGlassKey(radius: Dp, glassColor: Color): Modifier = co
                 drawNekoLensShadow(lens, lift, dark, painter)
                 val glass = drawNekoLensGlass(layers.lensGlass(), lens, lensRadius, lift, dark, 1f, painter) { region ->
                     drawNekoBackdrop(input, opacity, region, painter)
-                    drawNekoRestGlass(w, h, input, opacity, radiusPx, tint, dark, painter)
+                    // 透镜底片里的静止玻璃直接贴共用纹理，不再现跑一遍 KunBox 着色器。
+                    if (!sheet.drawKey(this, entry, keyOnly = true)) {
+                        drawNekoRestGlass(w, h, input, opacity, radiusPx, tint, dark, painter)
+                    }
                 }
                 if (!glass) drawNekoPill(lens, lensRadius, accent, lift, 1f, dark, painter)
                 val cx = w / 2f
@@ -309,13 +342,14 @@ internal fun NekoToolbarGlass(lens: NekoToolbarLens, pillHeight: Float, accent: 
     val palette = LocalMaterialPalette.current ?: MaterialPalette(colors.surface, colors.primary)
     val surface = LocalKeyboardPalette.current?.surface ?: palette.surface
     val dark = nekoIsDark(surface)
-    val origin = remember { mutableStateOf<Offset?>(null) }
+    // learn-33：位置不放进状态（绘制里读状态会让每次布局都重画），画笔只建一次。
+    val origin = remember { arrayOfNulls<Offset>(1) }
+    val painter = remember { NekoGlassPainter() }
     val source = rememberLensBackdropSource(dark, surface)
     val opacity = com.kingzcheung.xime.ui.keyboard.LocalKeyboardInputPreferences.current.frostedGlass.backgroundOpacity
         .takeIf { it.isFinite() }?.coerceIn(0f, 1f) ?: 1f
     val layer = rememberGraphicsLayer()
-    Box(modifier.onGloballyPositioned { origin.value = it.positionInRoot() }.graphicsLayer {}.drawWithCache {
-        val painter = NekoGlassPainter()
+    Box(modifier.onGloballyPositioned { origin[0] = it.positionInRoot() }.graphicsLayer {}.drawWithCache {
         onDrawBehind {
             lens.jelly.subscribe()
             val shown = lens.jelly.show.coerceIn(0f, 1f)
@@ -326,7 +360,7 @@ internal fun NekoToolbarGlass(lens: NekoToolbarLens, pillHeight: Float, accent: 
             if (lift < 1f) drawNekoPill(rect, r, accent, 0f, (1f - lift) * shown, dark, painter)
             if (lift > 0.004f) {
                 drawNekoLensShadow(rect, lift * shown, dark, painter)
-                val (input, _) = painter.cache.input(source, origin.value)
+                val input = Snapshot.withoutReadObservation { painter.cache.input(source, origin[0]).first }
                 val drawn = drawNekoLensGlass(layer, rect, r, lift, dark, shown, painter) { region ->
                     drawNekoBackdrop(input, opacity, region, painter)
                 }

@@ -356,6 +356,24 @@ fun KeyboardView(
     val handwritingOverlaySlot = handwritingPanelSlot(state.handwritingExpanded, state.handwritingNormalHeightDp,
         state.handwritingControlsWidthDp, state.handwritingControlsOffsetX, state.keyboardWidthDp, state.keyboardHeightDp)
     var cursorControlActive by remember { mutableStateOf(false) }
+    // learn-33：LocalKeyboardInputActions 是 static 的，每次重组都新建这两个 lambda 会让整块键盘（所有键）跟着重组；
+    // 只建一次，里面读最新的 callbacks。
+    val latestCallbacks by rememberUpdatedState(callbacks)
+    val letterSwipeAction: (String) -> Unit = remember(viewModel) {
+        { action ->
+            when {
+                action.startsWith("text:") -> latestCallbacks.onCommitText?.invoke(action.removePrefix("text:"))
+                action == "clipboard" -> viewModel.showOverlay(OverlayRoute.Clipboard(0))
+                else -> latestCallbacks.onToolbarEditingAction?.invoke(action)
+            }
+        }
+    }
+    val cursorModeChange: (Boolean) -> Unit = remember {
+        { active ->
+            cursorControlActive = active
+            if (active) latestCallbacks.onPreeditCursorMove?.invoke("preedit_cursor:0")
+        }
+    }
     val floatingBottomClearance = remember(state.isFloatingMode) { mutableFloatStateOf(0f) }
     // 上拉变悬浮后接着跟手：换模式时这一层不变，由它接着读手指。
     val undockFollow = remember { KeyboardUndockFollow() }
@@ -397,19 +415,10 @@ fun KeyboardView(
         LocalFunctionKeyColors provides KeyboardKeyColors(specialKeyBgColor, specialKeyTextColor),
         LocalKeyboardInputActions provides KeyboardInputActions(
             englishLetters = state.isAsciiMode,
-            onLetterSwipeAction = { action ->
-                when {
-                    action.startsWith("text:") -> callbacks.onCommitText?.invoke(action.removePrefix("text:"))
-                    action == "clipboard" -> viewModel.showOverlay(OverlayRoute.Clipboard(0))
-                    else -> callbacks.onToolbarEditingAction?.invoke(action)
-                }
-            },
+            onLetterSwipeAction = letterSwipeAction,
             onCursorMove = callbacks.onCursorMove,
             onCursorMoveVertical = callbacks.onCursorMoveVertical,
-            onCursorModeChange = {
-                cursorControlActive = it
-                if (it) callbacks.onPreeditCursorMove?.invoke("preedit_cursor:0")
-            },
+            onCursorModeChange = cursorModeChange,
             onVoiceModeChange = callbacks.onVoiceModeChange,
             onVoiceToggle = callbacks.onVoiceStickyToggle,
             onVoiceHoldEnd = callbacks.onVoiceHoldEnd,
