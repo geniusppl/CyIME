@@ -4,7 +4,7 @@ package com.kingzcheung.xime.ui.theme
  * Nekogram（tw.nekomimi.nekogram，GPL-3.0）液态玻璃的两个着色器，逐字照搬自 res/raw：
  * - neko_liquid_glass_shader.agsl：静止玻璃（KunBox roseforljh/KunBox（MIT）的光学 + 镜面边），文件夹标签栏/按键静止时用；
  * - neko_flclash_glass.agsl：抬起的透镜，chen08209/prism_ui（FlClash 的界面库，GPL-3.0）shaders/liquid_glass.frag 的 AGSL 移植。
- * 不要改动内容：调参在 NekoGlass.kt 里按 Nekogram 的 Java 设 uniform。
+ * 不要改动内容：调参在 NekoGlass.kt 里按 Nekogram 的 Java 设 uniform。唯一例外：learn-32 为性能把 frostDisc 的取样数封顶 8/12/16（原 16/32/64）。
  */
 
 internal const val NEKO_LIQUID_GLASS_SHADER = """
@@ -174,7 +174,7 @@ float4 frostDisc(float2 center, float2 reach, float falloff, int taps) {
   float2 ray = float2(1.0, 0.0);
   float4 sum = float4(0.0);
   float total = 0.0;
-  for (int i = 0; i < 64; i++) {
+  for (int i = 0; i < 16; i++) {
     if (i >= taps) {
       break;
     }
@@ -200,13 +200,17 @@ float4 sampleFrosted(float2 point, float frost) {
   float falloff = 0.5 * ratio.x * ratio.y;
   float2 center = (point - uSample.xy) / uSample.zw;
   float widest = max(sigma.x, sigma.y);
+  // CyIME learn-32 (performance): tap counts capped at 8 / 12 / 16 instead of
+  // 16 / 32 / 64. The frost only lives in the thin bevel band of a small lens,
+  // where the coarser Vogel disc reads the same; the original made one
+  // pressed key cost up to 192 texture reads per pixel.
   if (widest <= 2.0) {
-    return frostDisc(center, reach, falloff, 16);
+    return frostDisc(center, reach, falloff, 8);
   }
   if (widest <= 3.5) {
-    return frostDisc(center, reach, falloff, 32);
+    return frostDisc(center, reach, falloff, 12);
   }
-  return frostDisc(center, reach, falloff, 64);
+  return frostDisc(center, reach, falloff, 16);
 }
 
 float roundedBoxDistance(float2 p, float2 halfSize, float radius) {

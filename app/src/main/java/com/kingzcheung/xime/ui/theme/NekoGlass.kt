@@ -433,6 +433,15 @@ internal class NekoGlassPainter {
     private var rimDark = false
     var restFailed = false
     var lensFailed = false
+    private val rimMatrix = android.graphics.Matrix()
+    private val lens = Path()
+
+    /** 透镜形状（复用同一个 Path，按下时每帧不再新建）。 */
+    fun lensPath(rect: Rect, radius: Float): Path {
+        lens.reset()
+        lens.addRoundRect(RoundRect(rect, CornerRadius(radius)))
+        return lens
+    }
 
     /** NekoGlass.rimShader：上亮、中间淡、下沿又亮一点。 */
     fun rimShader(top: Float, height: Float, dark: Boolean): Shader {
@@ -449,9 +458,8 @@ internal class NekoGlassPainter {
             rimH = height
             rimDark = dark
         }
-        val m = android.graphics.Matrix()
-        m.setTranslate(0f, top)
-        s.setLocalMatrix(m)
+        rimMatrix.setTranslate(0f, top)
+        s.setLocalMatrix(rimMatrix)
         return s
     }
 }

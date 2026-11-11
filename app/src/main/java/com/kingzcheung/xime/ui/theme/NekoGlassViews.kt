@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -20,6 +21,7 @@ import androidx.compose.ui.graphics.ClipOp
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.drawscope.scale
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.isSpecified
 import androidx.compose.ui.graphics.rememberGraphicsLayer
 import androidx.compose.ui.input.pointer.PointerEventPass
@@ -27,6 +29,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalGraphicsContext
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.zIndex
 import kotlin.math.abs
@@ -59,8 +62,11 @@ internal fun Modifier.nekoGlassKey(radius: Dp, glassColor: Color): Modifier = co
     val opacity = frosted.backgroundOpacity.takeIf { it.isFinite() }?.coerceIn(0f, 1f) ?: 1f
     val target = if (glassColor.isSpecified) glassColor else surface
     val tint = remember(surface, target) { nekoGlassTint(surface, target) }
-    val glassLayer = rememberGraphicsLayer()
-    val contentLayer = rememberGraphicsLayer()
+    // 性能（learn-32，用户 11-11 真机「卡顿的没法用」）：静止玻璃和阴影只录一次进离屏图层（GPU 缓存成纹理），
+    // 之后每帧只贴图；透镜的两个图层按下时才建。每个键自己一层 graphicsLayer，一个键动画只重画它自己。
+    val graphics = LocalGraphicsContext.current
+    val layers = remember(graphics) { NekoKeyLayers(graphics) }
+    DisposableEffect(layers) { onDispose { layers.release() } }
     val shape = remember(radius) { RoundedCornerShape(radius) }
     this.onGloballyPositioned { origin.value = it.positionInRoot() }
         .zIndex(if (jelly.raised) 1f else 0f)
@@ -96,8 +102,9 @@ internal fun Modifier.nekoGlassKey(radius: Dp, glassColor: Color): Modifier = co
                 }
             }
         }
+        .graphicsLayer {}
         .drawWithCache {
-            val painter = NekoGlassPainter()
+            val painter = layers.painter
             val radiusPx = radius.toPx()
             val growth = NEKO_LENS_GROWTH_DP * density
             onDrawWithContent {
@@ -109,9 +116,11 @@ internal fun Modifier.nekoGlassKey(radius: Dp, glassColor: Color): Modifier = co
                     return@onDrawWithContent
                 }
                 if (!jelly.raised && !jelly.pressed) jelly.place(w / 2f, w)
-                val (input, _) = painter.cache.input(source, origin.value)
-                drawNekoRestShadow(w, h, radiusPx, dark, painter)
-                drawNekoRestGlass(w, h, input, opacity, radiusPx, tint, dark, painter)
+                val at = origin.value
+                val (input, _) = painter.cache.input(source, at)
+                layers.drawRest(this, nekoRestKey(w, h, radiusPx, tint, dark, opacity, at, source),
+                    shadow = { drawNekoRestShadow(w, h, radiusPx, dark, painter) },
+                    glass = { drawNekoRestGlass(w, h, input, opacity, radiusPx, tint, dark, painter) })
                 val lift = jelly.lift.coerceIn(0f, 1f)
                 if (lift <= 0.004f) {
                     drawContent()
@@ -119,11 +128,11 @@ internal fun Modifier.nekoGlassKey(radius: Dp, glassColor: Color): Modifier = co
                 }
                 val lens = jelly.rect(h / 2f, h, growth)
                 val lensRadius = min(radiusPx + growth * lift, min(lens.width, lens.height) / 2f)
-                val lensPath = nekoLensPath(lens, lensRadius)
+                val lensPath = painter.lensPath(lens, lensRadius)
                 // 透镜外照常画字（跟手时透镜可能离开键帽一部分）。
                 clipPath(lensPath, clipOp = ClipOp.Difference) { this@onDrawWithContent.drawContent() }
                 drawNekoLensShadow(lens, lift, dark, painter)
-                val glass = drawNekoLensGlass(glassLayer, lens, lensRadius, lift, dark, 1f, painter) { region ->
+                val glass = drawNekoLensGlass(layers.lensGlass(), lens, lensRadius, lift, dark, 1f, painter) { region ->
                     drawNekoBackdrop(input, opacity, region, painter)
                     drawNekoRestGlass(w, h, input, opacity, radiusPx, tint, dark, painter)
                 }
@@ -133,7 +142,7 @@ internal fun Modifier.nekoGlassKey(radius: Dp, glassColor: Color): Modifier = co
                 val content: androidx.compose.ui.graphics.drawscope.DrawScope.(Float) -> Unit = { magnify ->
                     scale(magnify, magnify, Offset(cx, cy)) { this@onDrawWithContent.drawContent() }
                 }
-                if (!glass || !drawNekoLensContent(contentLayer, lens, lensRadius, lift, dark, accent, 1f, painter, content)) {
+                if (!glass || !drawNekoLensContent(layers.lensContent(), lens, lensRadius, lift, dark, accent, 1f, painter, content)) {
                     drawNekoLensContentFallback(lens, lensRadius, lift, accent, 1f, content)
                 }
             }
@@ -305,7 +314,7 @@ internal fun NekoToolbarGlass(lens: NekoToolbarLens, pillHeight: Float, accent: 
     val opacity = com.kingzcheung.xime.ui.keyboard.LocalKeyboardInputPreferences.current.frostedGlass.backgroundOpacity
         .takeIf { it.isFinite() }?.coerceIn(0f, 1f) ?: 1f
     val layer = rememberGraphicsLayer()
-    Box(modifier.onGloballyPositioned { origin.value = it.positionInRoot() }.drawWithCache {
+    Box(modifier.onGloballyPositioned { origin.value = it.positionInRoot() }.graphicsLayer {}.drawWithCache {
         val painter = NekoGlassPainter()
         onDrawBehind {
             lens.jelly.subscribe()
@@ -354,7 +363,7 @@ internal fun Modifier.nekoToolbarLensTint(
             return@drawWithContent
         }
         val r = rect.height / 2f
-        clipPath(nekoLensPath(rect, r), clipOp = ClipOp.Difference) { this@drawWithContent.drawContent() }
+        clipPath(painter.lensPath(rect, r), clipOp = ClipOp.Difference) { this@drawWithContent.drawContent() }
         val cx = size.width / 2f
         val cy = size.height / 2f
         val content: androidx.compose.ui.graphics.drawscope.DrawScope.(Float) -> Unit = { m ->
