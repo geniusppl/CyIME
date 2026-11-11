@@ -27,7 +27,8 @@ enum class VoiceOtherAudio(val id: String, val label: String) {
  * 压低音量：直接把媒体音量临时调到原来的五分之一。原来用可压低的焦点让系统去压，用户 11-06 实测没用——
  * 播放器是语音内容（播客、视频解说）或用 AAudio 时系统不压，交给应用自己处理，很多应用收到也不理。
  *
- * 关麦时只还原自己动过的那次，说话时用户自己调过音量就听用户的。动音量之前先落盘记一笔，进程中途被杀
+ * 关麦时只还原自己动过的那次，说话时用户把音量调到比原来还高就听用户的，否则一律还原；语音整个结束时
+ * 还会无条件再还原一次（[releaseAll]），不靠持有者计数。动音量之前先落盘记一笔，进程中途被杀
  * 没来得及还原，下次创建时补上，不会让媒体一直很小声或没声。
  *
  * 只在开麦那一刻有媒体在放时动作；同一时刻可能有新旧两段录音交接，按持有者计数，最后一个放手才恢复。
@@ -70,6 +71,8 @@ internal class VoiceAudioFocus(private val context: Context) {
 
     fun acquire(owner: Any) { synchronized(lock) {
         if (!owners.add(owner) || owners.size > 1) return
+        // 上一次没还原干净（不该发生）：先还原再压，不在压低的音量上再压一次。
+        if (volumeBefore >= 0 || mutedMusic || focusRequest != null) restore()
         try {
             val mode = SettingsPreferences.getSttOtherAudio(context)
             if (mode == VoiceOtherAudio.OFF) return
@@ -118,6 +121,15 @@ internal class VoiceAudioFocus(private val context: Context) {
         restore()
     } }
 
+    /**
+     * 语音整个结束（认完、出错、取消、收键盘、换输入框、服务销毁）时无条件调：不管还有没有持有者没放手，
+     * 一律放掉焦点、还原音量。可重复调用。用户 11-11：learn-30 之后长按空格云端语音完媒体音量仍被留小。
+     */
+    fun releaseAll() { synchronized(lock) {
+        owners.clear()
+        restore()
+    } }
+
     private fun restore() {
         val request = focusRequest
         focusRequest = null
@@ -139,11 +151,19 @@ internal class VoiceAudioFocus(private val context: Context) {
             volumeBefore = -1
             volumeLowered = -1
             try {
-                // 说话时用户自己把音量调高了就听用户的；否则一律还原。原来要求音量恰好等于压到的值，
-                // 安卓 17 上系统会把音量档位挪一格（或换了耳机/外放），对不上就一直不还原，声音被留小（用户 11-11 反馈）。
+                // 是我们压低的：只要用户没把音量调到比原来还高，就还原到原来的音量（learn-33）。
+                // learn-30 要求「不高于压到的那档 +1」，安卓 17 上系统挪档、换输出设备都会对不上，声音被一直留小。
                 val manager = audio
-                if (manager != null && manager.getStreamVolume(AudioManager.STREAM_MUSIC) <= lowered + 1) {
-                    manager.setStreamVolume(AudioManager.STREAM_MUSIC, before, 0)
+                if (manager != null) {
+                    val now = manager.getStreamVolume(AudioManager.STREAM_MUSIC)
+                    if (now < before) {
+                        manager.setStreamVolume(AudioManager.STREAM_MUSIC, before, 0)
+                        // 戴耳机时系统的「安全音量」会悄悄拦下不弹界面的调高：没调上去就带音量条再调一次。
+                        if (manager.getStreamVolume(AudioManager.STREAM_MUSIC) < before) {
+                            manager.setStreamVolume(AudioManager.STREAM_MUSIC, before, AudioManager.FLAG_SHOW_UI)
+                        }
+                        Log.i(TAG, "Media volume restored $now -> $before (lowered to $lowered)")
+                    }
                 }
                 SettingsPreferences.setSttMusicVolumeBeforeVoice(context, -1)
             } catch (error: Exception) {

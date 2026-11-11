@@ -125,15 +125,40 @@ class VoiceAudioFocusTest {
         verify(audio, never()).setStreamVolume(any(), any(), any())
     }
 
-    @Test fun volumeTheUserChangedWhileTalkingIsKept() {
+    /** learn-33：用户说话时把音量调到比原来还高才听用户的；挪了档但没高过原来，一律还原。 */
+    @Test fun volumeTheUserRaisedAboveTheOriginalIsKept() {
         SettingsPreferences.setSttOtherAudio(app, VoiceOtherAudio.DUCK)
         whenever(audio.getStreamVolume(AudioManager.STREAM_MUSIC)).thenReturn(10)
         val focus = VoiceAudioFocus(context)
         val owner = Any()
         focus.acquire(owner)
-        whenever(audio.getStreamVolume(AudioManager.STREAM_MUSIC)).thenReturn(6)
+        whenever(audio.getStreamVolume(AudioManager.STREAM_MUSIC)).thenReturn(12)
         focus.release(owner)
-        verify(audio, never()).setStreamVolume(AudioManager.STREAM_MUSIC, 10, 0)
+        verify(audio, never()).setStreamVolume(eq(AudioManager.STREAM_MUSIC), eq(10), any())
+    }
+
+    @Test fun volumeMovedButNotAboveTheOriginalIsRestored() {
+        SettingsPreferences.setSttOtherAudio(app, VoiceOtherAudio.DUCK)
+        whenever(audio.getStreamVolume(AudioManager.STREAM_MUSIC)).thenReturn(10)
+        val focus = VoiceAudioFocus(context)
+        val owner = Any()
+        focus.acquire(owner)
+        whenever(audio.getStreamVolume(AudioManager.STREAM_MUSIC)).thenReturn(5)
+        focus.release(owner)
+        verify(audio).setStreamVolume(AudioManager.STREAM_MUSIC, 10, 0)
+    }
+
+    /** learn-33：持有者没放手（漏了一条结束路径）时，语音结束的 releaseAll 也一定还原。 */
+    @Test fun releaseAllRestoresEvenWithALeakedOwnerAndIsIdempotent() {
+        SettingsPreferences.setSttOtherAudio(app, VoiceOtherAudio.DUCK)
+        whenever(audio.getStreamVolume(AudioManager.STREAM_MUSIC)).thenReturn(10)
+        val focus = VoiceAudioFocus(context)
+        focus.acquire(Any())
+        whenever(audio.getStreamVolume(AudioManager.STREAM_MUSIC)).thenReturn(2)
+        focus.releaseAll()
+        focus.releaseAll()
+        verify(audio, times(1)).setStreamVolume(AudioManager.STREAM_MUSIC, 10, 0)
+        assertEquals(-1, SettingsPreferences.getSttMusicVolumeBeforeVoice(app))
     }
 
     @Test fun alreadyMutedMediaIsLeftAlone() {

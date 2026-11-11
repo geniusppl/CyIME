@@ -290,6 +290,8 @@ class SpeechRecognitionManager(
         loadingCancelled = true
         stopAfterLoad = false
         releasePreStart()
+        // 取消 = 这次语音整个结束（收键盘、换输入框、销毁都走这里）：无条件还原媒体音量、放掉焦点（learn-33）。
+        audioFocus.releaseAll()
         Log.d(TAG, "Canceling recognition")
         val thread = recordingThread
         if (thread == null) {
@@ -383,6 +385,7 @@ class SpeechRecognitionManager(
         released = true
         Log.d(TAG, "Releasing speech recognition")
         releasePreStart()
+        audioFocus.releaseAll()
         mainHandler.removeCallbacks(pendingBackendRelease)
         pendingReleaseSession = -1
         cancelRecognition()
@@ -698,6 +701,9 @@ class SpeechRecognitionManager(
             mainHandler.post {
                 if (recordingThread === this) {
                     recordingThread = null
+                    // 认完/出错都到这里：没有别的录音也没有预启动的麦克风时，无条件还原媒体音量（learn-33）。
+                    val micPending = synchronized(this@SpeechRecognitionManager) { preStartedRecord != null }
+                    if (!micPending && !loadPending) audioFocus.releaseAll()
                     if (!released) {
                         if (currentState != RecognitionState.ERROR) setState(RecognitionState.IDLE)
                         scheduleBackendRelease(sessionId)
