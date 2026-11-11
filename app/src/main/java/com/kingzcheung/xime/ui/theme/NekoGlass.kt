@@ -453,6 +453,22 @@ private object NekoShaders {
     }
 }
 
+/**
+ * learn-36：键盘一出来就在后台线程把四个着色器编译好（RuntimeShader 构造就是 SkSL 编译，十几到几十毫秒），
+ * 第一次按键不再在主线程里现编透镜着色器。by lazy 默认同步，主线程同时要用时只会等这一次编译。
+ */
+internal fun nekoPrewarmShaders() {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+    try {
+        NekoShaders.rest
+        NekoShaders.fade
+        NekoShaders.lensGlass
+        NekoShaders.lensContent
+    } catch (t: Throwable) {
+        android.util.Log.w("CyImeNekoGlass", "shader prewarm failed", t)
+    }
+}
+
 /** 每个玻璃件一份画笔（只在主线程绘制里用）。 */
 internal class NekoGlassPainter {
     val cache = LensPaintCache()
@@ -555,6 +571,16 @@ internal fun DrawScope.drawNekoRestGlass(
         drawIntoCanvas { it.nativeCanvas.drawRoundRect(0f, 0f, w, h, r, r, p) }
     }
     drawNekoStrokes(w, h, r, dark, painter)
+}
+
+/** learn-36：果冻特效关时的按下反馈——键面叠一层淡色（深色主题提亮、浅色压暗），不用图层、不用着色器。 */
+internal fun DrawScope.drawNekoPressedTint(w: Float, h: Float, radiusPx: Float, dark: Boolean, painter: NekoGlassPainter) {
+    if (w < 1f || h < 1f) return
+    val r = min(radiusPx, min(w, h) / 2f)
+    val p = painter.fill
+    p.shader = null
+    p.color = if (dark) android.graphics.Color.argb(0x2E, 255, 255, 255) else android.graphics.Color.argb(0x1F, 0, 0, 0)
+    drawIntoCanvas { it.nativeCanvas.drawRoundRect(0f, 0f, w, h, r, r, p) }
 }
 
 /** learn-35 最后的退路：玻璃全失败时只画纯底色键 + 描边（不用着色器、不用图层）。 */

@@ -46,7 +46,7 @@ import kotlin.math.min
  * - 按下不画选中底色，直接长出 FlClash 透镜（抬起、四周各长 8dp、可超出键帽，画到邻键上面）；
  *   拖过触摸阈值后按 rubberBand(手指 − 键中心, 节距 × .35) 跟手，松手 700ms 内用 SETTLE 弹簧回中；
  *   透镜第二遍是这个键自己的字/图标，放大 1 + .16 × lift、染成强调色；
- * - 「果冻特效」关：玻璃和抬起照旧，不拉长压扁、不跟手。
+ * - 「果冻特效」关（learn-36）：静止玻璃照旧；按下不长透镜、不抬起、不跟手，只在键面叠一层淡色（和 learn-30 以前一样轻）。
  */
 
 /** 按键玻璃。[glassColor] 是键原来的底色（未指定时用键盘底色）。 */
@@ -70,6 +70,9 @@ internal fun Modifier.nekoGlassKey(radius: Dp, glassColor: Color): Modifier = co
     // - 抬起时画到邻键上面（zIndex）只在摆放阶段读，按下/松开不再让这个键重组。
     val graphics = LocalGraphicsContext.current
     val context = androidx.compose.ui.platform.LocalContext.current
+    // learn-36：果冻特效关时按下完全不走透镜（不建离屏图层、不跑透镜着色器、不跟手），只画淡色按下底。
+    val jellyOn = LiquidGlass.jelly(context)
+    val plainPressed = remember { mutableStateOf(false) }
     // learn-35：共用纹理上次让进程没了（或本进程出过错）就不用，退回每键缓存。
     val useSheet = remember(context) { NekoGlassGuard.sheetAllowed(context) }
     val scoped = LocalNekoRestSheet.current
@@ -105,10 +108,10 @@ internal fun Modifier.nekoGlassKey(radius: Dp, glassColor: Color): Modifier = co
             val placeable = measurable.measure(constraints)
             layout(placeable.width, placeable.height) {
                 // 只在摆放阶段读：抬起/放下只重新摆这个键，不重组。
-                placeable.place(0, 0, zIndex = if (jelly.raised) 1f else 0f)
+                placeable.place(0, 0, zIndex = if (jellyOn && jelly.raised) 1f else 0f)
             }
         }
-        .pointerInput(jelly) {
+        .then(if (jellyOn) Modifier.pointerInput(jelly) {
             awaitEachGesture {
                 // 只旁观，不消费：不影响点击、滑动和长按。
                 val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
@@ -139,7 +142,22 @@ internal fun Modifier.nekoGlassKey(radius: Dp, glassColor: Color): Modifier = co
                     jelly.setTarget(centre, w, NekoJelly.MODE_TRAVEL)
                 }
             }
-        }
+        } else Modifier.pointerInput(Unit) {
+            // learn-36：果冻特效关——不长透镜、不跟手，只记按没按着（同样只旁观不消费），按着时键面叠一层淡色。
+            awaitEachGesture {
+                val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                plainPressed.value = true
+                try {
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                        if (!change.pressed) break
+                    }
+                } finally {
+                    plainPressed.value = false
+                }
+            }
+        })
         .graphicsLayer {}
         .drawWithCache {
             val painter = layers.painter
@@ -153,7 +171,7 @@ internal fun Modifier.nekoGlassKey(radius: Dp, glassColor: Color): Modifier = co
                     drawContent()
                     return@onDrawWithContent
                 }
-                if (!jelly.raised && !jelly.pressed) jelly.place(w / 2f, w)
+                if (jellyOn && !jelly.raised && !jelly.pressed) jelly.place(w / 2f, w)
                 // learn-35：静止玻璃三级退路——共用纹理 → 每键缓存（learn-32）→ 纯底色键；任何一级抛错都不让输入法崩。
                 var restDrawn = false
                 if (useSheet && !NekoGlassGuard.sheetOff) {
@@ -179,6 +197,13 @@ internal fun Modifier.nekoGlassKey(radius: Dp, glassColor: Color): Modifier = co
                 }
                 if (!restDrawn) {
                     try { drawNekoPlainKey(w, h, radiusPx, tint, dark, painter) } catch (t: Throwable) { NekoGlassGuard.failed("plain key", t) }
+                }
+                if (!jellyOn) {
+                    if (plainPressed.value) {
+                        try { drawNekoPressedTint(w, h, radiusPx, dark, painter) } catch (t: Throwable) { NekoGlassGuard.failed("pressed tint", t) }
+                    }
+                    drawContent()
+                    return@onDrawWithContent
                 }
                 val lift = jelly.lift.coerceIn(0f, 1f)
                 if (lift <= 0.004f) {

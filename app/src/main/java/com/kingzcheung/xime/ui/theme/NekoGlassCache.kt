@@ -56,15 +56,24 @@ internal class NekoRestEntry {
     /** 这个键负责贴的那一格（本地坐标，含分到的阴影缝）。 */
     var cell = Rect.Zero
 
-    /** 返回 true：样式变了，需要重录。 */
+    /** 录进纹理时这个键的底色。 */
+    var recTint = 0
+
+    /**
+     * 返回 true：整张共用纹理需要重录。
+     * learn-36：只有底色变了（空格、退格、回车等功能键按下/拂动时底色会变）不再让整块键区重录、所有键重画——
+     * 那会在每次按功能键的按下和松开各把几十个键的 KunBox 着色器重跑一遍；这个键自己走每键缓存画新底色（[NekoRestSheet.drawKey] 返回 false）。
+     */
     fun setStyle(radius: Float, tint: Int, dark: Boolean, opacity: Float, source: LensBackdropSource): Boolean {
-        if (this.radius == radius && this.tint == tint && this.dark == dark && this.opacity == opacity && this.source === source) return false
+        val structural = this.radius != radius || this.dark != dark || this.opacity != opacity || this.source !== source
+        val tintChanged = this.tint != tint
+        if (!structural && !tintChanged) return false
         this.radius = radius
         this.tint = tint
         this.dark = dark
         this.opacity = opacity
         this.source = source
-        return true
+        return structural || !recorded
     }
 
     val drawable: Boolean get() = w >= 1f && h >= 1f && source != null
@@ -166,6 +175,7 @@ internal class NekoRestSheet(private val graphics: GraphicsContext) {
             }
             for (e in list) {
                 e.recorded = true
+                e.recTint = e.tint
                 e.recLeft = e.left
                 e.recTop = e.top
                 e.recW = e.w
@@ -180,7 +190,7 @@ internal class NekoRestSheet(private val graphics: GraphicsContext) {
      */
     fun drawKey(scope: DrawScope, entry: NekoRestEntry, keyOnly: Boolean = false): Boolean {
         val l = layer ?: return false
-        if (!entry.recorded || released) return false
+        if (!entry.recorded || released || entry.recTint != entry.tint) return false
         val c = if (keyOnly) Rect(0f, 0f, entry.recW, entry.recH) else entry.cell
         with(scope) {
             clipRect(c.left, c.top, c.right, c.bottom) {
@@ -235,6 +245,10 @@ internal fun rememberNekoRestSheet(): NekoRestSheet {
     val graphics = LocalGraphicsContext.current
     val sheet = remember(graphics) { NekoRestSheet(graphics) }
     DisposableEffect(sheet) { onDispose { sheet.release() } }
+    // learn-36：键盘出来时在后台线程预编译玻璃/透镜着色器，第一次按键不在主线程现编。
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) { nekoPrewarmShaders() }
+    }
     return sheet
 }
 
@@ -284,7 +298,7 @@ internal object NekoGlassGuard {
                     if (p.getLong(KEY_BAD_INSTALL, -1L) == stamp) {
                         sheetOff = true
                     } else if (p.getBoolean(KEY_PENDING, false)) {
-                        p.edit().putLong(KEY_BAD_INSTALL, stamp).putBoolean(KEY_PENDING, false).commit()
+                        p.edit().putLong(KEY_BAD_INSTALL, stamp).putBoolean(KEY_PENDING, false).apply()
                         sheetOff = true
                         android.util.Log.w(TAG, "Shared rest glass disabled: process died while it was in use")
                     }
@@ -302,7 +316,8 @@ internal object NekoGlassGuard {
         armed = true
         try {
             val p = prefs(context) ?: return
-            p.edit().putBoolean(KEY_PENDING, true).commit()
+            // learn-36：apply()（内存立刻生效、后台线程落盘），不在主线程绘制里同步写盘。
+            p.edit().putBoolean(KEY_PENDING, true).apply()
             android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
                 try { p.edit().putBoolean(KEY_PENDING, false).apply() } catch (_: Throwable) {}
             }, SETTLE_MS)
