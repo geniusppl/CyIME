@@ -324,9 +324,9 @@ dependencies {
     // Bundled OCR works without Play Services or a first-use model download.
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.28.0")
     implementation("org.opencv:opencv:4.12.0")
-    implementation("androidx.camera:camera-camera2:1.6.2")
-    implementation("androidx.camera:camera-lifecycle:1.6.2")
-    implementation("androidx.camera:camera-view:1.6.2")
+    implementation("androidx.camera:camera-camera2:1.7.0")
+    implementation("androidx.camera:camera-lifecycle:1.7.0")
+    implementation("androidx.camera:camera-view:1.7.0")
 
     implementation(libs.kotlinx.serialization.json)
 
